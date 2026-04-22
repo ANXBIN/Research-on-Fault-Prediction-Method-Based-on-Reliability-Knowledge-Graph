@@ -95,6 +95,92 @@ class KGEnhancedMLP(nn.Module):
         return self.classifier(x_fused)
 
 
+class KGDeepFusionMLP(nn.Module):
+    """知识图谱深度融合MLP - V2新方案
+
+    与V1的区别：
+    1. 双线性交互层 - 学习特征与KG的高阶交互
+    2. 门控机制 - 自适应决定特征和KG信息的权重
+    3. 更深的融合层 - 3层MLP而非单层
+    """
+
+    def __init__(self, in_channels, kg_embedding_dim, hidden_channels,
+                 out_channels, dropout=0.3):
+        super(KGDeepFusionMLP, self).__init__()
+
+        # 原始特征编码器 - 2层网络
+        self.feature_net = nn.Sequential(
+            nn.Linear(in_channels, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        # KG嵌入编码器 - 2层网络
+        self.kg_net = nn.Sequential(
+            nn.Linear(kg_embedding_dim, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        # 双线性交互 - 学习特征和KG的成对交互
+        self.bilinear = nn.Bilinear(hidden_channels, hidden_channels, hidden_channels)
+
+        # 门控融合网络
+        self.gate_net = nn.Sequential(
+            nn.Linear(hidden_channels * 2, hidden_channels),
+            nn.Sigmoid()
+        )
+
+        # 深度融合层
+        self.fusion = nn.Sequential(
+            nn.Linear(hidden_channels * 4, hidden_channels),  # feat, kg, bilinear, gated
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        # 分类头
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels // 2, out_channels)
+        )
+
+    def forward(self, x, kg_embedding):
+        # 编码
+        x_feat = self.feature_net(x)    # (batch, hidden)
+        x_kg = self.kg_net(kg_embedding)  # (batch, hidden)
+
+        # 双线性交互
+        x_bilinear = self.bilinear(x_feat, x_kg)  # (batch, hidden)
+
+        # 门控融合
+        gate_input = torch.cat([x_feat, x_kg], dim=1)
+        gate = self.gate_net(gate_input)
+        x_gated = x_feat * gate + x_kg * (1 - gate)
+
+        # 四路拼接融合
+        combined = torch.cat([x_feat, x_kg, x_bilinear, x_gated], dim=1)
+        x_fused = self.fusion(combined)
+
+        return self.classifier(x_fused)
+
+
 class MLPModel:
     """MLP模型包装类"""
 
@@ -221,6 +307,110 @@ class KGEnhancedMLPModel:
     def build_model(self, n_features, n_classes):
         """构建模型"""
         self.model = KGEnhancedMLP(
+            in_channels=n_features,
+            kg_embedding_dim=self.kg_embedding_dim,
+            hidden_channels=self.hidden_dim,
+            out_channels=n_classes,
+            dropout=self.dropout
+        ).to(self.device)
+
+        self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate)
+        return self.model
+
+    def train_epoch(self, X, y, kg_embeddings):
+        """训练一个epoch"""
+        self.model.train()
+        X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
+        kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
+        y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
+
+        self.optimizer.zero_grad()
+        out = self.model(X_tensor, kg_tensor)
+        loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
+        loss.backward()
+        self.optimizer.step()
+
+        pred = out.argmax(dim=1)
+        acc = (pred == y_tensor).sum().item() / len(y_tensor)
+
+        return loss.item(), acc
+
+    @torch.no_grad()
+    def evaluate(self, X, y, kg_embeddings):
+        """评估模型"""
+        self.model.eval()
+        X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
+        kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
+        y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
+
+        out = self.model(X_tensor, kg_tensor)
+        loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
+
+        pred = out.argmax(dim=1)
+        acc = (pred == y_tensor).sum().item() / len(y_tensor)
+
+        return {'loss': loss.item(), 'accuracy': acc}, pred.cpu().numpy()
+
+    def predict(self, X, kg_embeddings):
+        """预测"""
+        self.model.eval()
+        X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
+        kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
+        out = self.model(X_tensor, kg_tensor)
+        return out.argmax(dim=1).cpu().numpy()
+
+    def save_model(self, path):
+        """保存模型"""
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'fault_to_idx': self.fault_to_idx,
+            'config': {
+                'hidden_dim': self.hidden_dim,
+                'kg_embedding_dim': self.kg_embedding_dim,
+                'dropout': self.dropout,
+                'learning_rate': self.learning_rate
+            }
+        }, path)
+        print(f"[INFO] 模型已保存至: {path}")
+
+    def load_model(self, path):
+        """加载模型"""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.fault_to_idx = checkpoint['fault_to_idx']
+        print(f"[INFO] 模型已从: {path} 加载")
+
+
+class KGEnhancedMLPV2Model:
+    """知识图谱深度融合MLP V2模型包装类"""
+
+    def __init__(self, config_path='config.yaml'):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            self.config = yaml.safe_load(f)
+
+        model_cfg = self.config['models'].get('kg_enhanced_mlp_v2', {})
+        self.hidden_dim = model_cfg.get('hidden_dim', 128)
+        self.kg_embedding_dim = model_cfg.get('kg_embedding_dim', 64)
+        self.dropout = model_cfg.get('dropout', 0.3)
+        self.learning_rate = model_cfg.get('learning_rate', 0.001)
+        self.epochs = model_cfg.get('epochs', 100)
+
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+        else:
+            self.device = torch.device('cpu')
+
+        self.model = None
+        self.optimizer = None
+        self.fault_to_idx = {}
+
+    def build_model(self, n_features, n_classes):
+        """构建模型"""
+        self.model = KGDeepFusionMLP(
             in_channels=n_features,
             kg_embedding_dim=self.kg_embedding_dim,
             hidden_channels=self.hidden_dim,

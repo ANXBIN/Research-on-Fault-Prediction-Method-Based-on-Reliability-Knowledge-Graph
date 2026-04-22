@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from models.gnn_model import GNNModel, FaultGraphDataset
 from models.rf_model import RFModel
 from models.kg_enhanced_models import KGEnhancedRF, create_kg_enhanced_features
-from models.mlp_model import MLPModel, KGEnhancedMLPModel, load_kg_embeddings_v3
+from models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
@@ -348,6 +348,57 @@ class FaultPredictionTrainer:
 
         return kg_mlp_model
 
+    def train_kg_enhanced_mlp_v2(self):
+        """训练知识图谱深度融合MLP V2模型"""
+        print("\n" + "=" * 60)
+        print("训练 KG-Enhanced MLP V2 模型 (深度融合)")
+        print("=" * 60)
+
+        kg_embed_path = 'data/processed/kg_embeddings.json'
+        from models.mlp_model import load_kg_embeddings_v3
+
+        kg_train_emb = load_kg_embeddings_v3(
+            kg_embed_path, len(self.X_train),
+            None, self.X_train
+        )
+        kg_val_emb = load_kg_embeddings_v3(
+            kg_embed_path, len(self.X_val),
+            None, self.X_train, self.X_val
+        )
+
+        print(f"KG嵌入维度: {kg_train_emb.shape}")
+
+        kg_mlp_v2_model = KGEnhancedMLPV2Model(config_path='config.yaml')
+        kg_mlp_v2_model.fault_to_idx = self.fault_to_idx
+
+        kg_mlp_v2_model.build_model(self.X_train.shape[1], len(self.fault_types))
+
+        for epoch in range(kg_mlp_v2_model.epochs):
+            train_loss, train_acc = kg_mlp_v2_model.train_epoch(
+                self.X_train, self.y_train, kg_train_emb
+            )
+
+            if epoch % 20 == 0 or epoch == kg_mlp_v2_model.epochs - 1:
+                print(f"Epoch {epoch}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}")
+
+        train_metrics, _ = kg_mlp_v2_model.evaluate(self.X_train, self.y_train, kg_train_emb)
+        val_metrics, val_pred = kg_mlp_v2_model.evaluate(self.X_val, self.y_val, kg_val_emb)
+
+        print(f"训练集 - 准确率: {train_metrics['accuracy']:.4f}")
+        print(f"验证集 - 准确率: {val_metrics['accuracy']:.4f}")
+
+        model_path = self.output_path / 'models' / 'kg_enhanced_mlp_v2_model.pt'
+        kg_mlp_v2_model.save_model(str(model_path))
+
+        self.results['models']['KG_Enhanced_MLP_V2'] = {
+            'train_accuracy': float(train_metrics['accuracy']),
+            'train_f1': float(train_metrics.get('f1', train_metrics['accuracy'])),
+            'val_accuracy': float(val_metrics['accuracy']),
+            'val_f1': float(val_metrics.get('f1', val_metrics['accuracy']))
+        }
+
+        return kg_mlp_v2_model
+
     def evaluate_all_models(self):
         """在测试集上评估所有模型"""
         print("\n" + "=" * 60)
@@ -443,6 +494,31 @@ class FaultPredictionTrainer:
                 results['KG_Enhanced_MLP'] = test_metrics
                 print(f"KG-Enhanced MLP - 准确率: {test_metrics['accuracy']:.4f}, F1: {test_metrics['f1']:.4f}")
 
+        # KG-Enhanced MLP V2评估
+        if 'KG_Enhanced_MLP_V2' in self.results['models']:
+            kg_mlp_v2_path = self.output_path / 'models' / 'kg_enhanced_mlp_v2_model.pt'
+            if kg_mlp_v2_path.exists():
+                import torch
+                from models.mlp_model import KGEnhancedMLPV2Model, load_kg_embeddings_v3
+
+                kg_mlp_v2_model = KGEnhancedMLPV2Model(config_path='config.yaml')
+                kg_mlp_v2_model.build_model(self.X_test.shape[1], len(self.fault_types))
+                checkpoint = torch.load(kg_mlp_v2_path, map_location=kg_mlp_v2_model.device)
+                kg_mlp_v2_model.model.load_state_dict(checkpoint['model_state_dict'])
+
+                kg_test_emb = load_kg_embeddings_v3(
+                    'data/processed/kg_embeddings.json', len(self.X_test),
+                    None, self.X_train, self.X_test
+                )
+
+                test_metrics, _ = kg_mlp_v2_model.evaluate(self.X_test, self.y_test, kg_test_emb)
+                from sklearn.metrics import f1_score
+                y_pred = kg_mlp_v2_model.predict(self.X_test, kg_test_emb)
+                test_metrics['f1'] = f1_score(self.y_test, y_pred, average='weighted')
+
+                results['KG_Enhanced_MLP_V2'] = test_metrics
+                print(f"KG-Enhanced MLP V2 - 准确率: {test_metrics['accuracy']:.4f}, F1: {test_metrics['f1']:.4f}")
+
         self.results['test_results'] = results
 
         # 保存结果
@@ -494,6 +570,8 @@ def main():
                        help='跳过MLP训练')
     parser.add_argument('--skip_kg_mlp', action='store_true',
                        help='跳过KG增强MLP训练')
+    parser.add_argument('--skip_kg_mlp_v2', action='store_true',
+                       help='跳过KG增强MLP V2训练')
     args = parser.parse_args()
 
     # 初始化训练器
@@ -517,6 +595,9 @@ def main():
 
     if not args.skip_kg_mlp:
         trainer.train_kg_enhanced_mlp()
+
+    if not args.skip_kg_mlp_v2:
+        trainer.train_kg_enhanced_mlp_v2()
 
     # 模型对比
     trainer.compare_models()
