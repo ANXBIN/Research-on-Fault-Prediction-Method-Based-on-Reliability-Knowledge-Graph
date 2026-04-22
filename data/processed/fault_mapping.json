@@ -1,0 +1,11 @@
+{
+  "Ball_Fault": "1ndBearing_ball",
+  "Inner_Race_Fault": "1ndBearing_inner",
+  "Outer_Race_Fault": "1ndBearing_outer",
+  "Mixed_Fault": "1ndBearing_mix(inner+outer+ball)",
+  "Broken_Tooth": "2ndPlanetary_brokentooth",
+  "Missing_Tooth": "2ndPlanetary_missingtooth",
+  "Normal": "2ndPlanetary_normalstate",
+  "Root_Crack": "2ndPlanetary_rootcracks",
+  "Tooth_Wear": "2ndPlanetary_toothwear"
+}
