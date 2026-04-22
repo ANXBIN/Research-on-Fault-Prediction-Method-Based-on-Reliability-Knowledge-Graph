@@ -487,6 +487,117 @@ class KGEnhancedMLPV2Model:
         print(f"[INFO] 模型已从: {path} 加载")
 
 
+class KGEnhancedMLPV3Model:
+    """知识图谱增强MLP V3模型 - 使用故障级别嵌入
+
+    V3与V1的区别：
+    - V1使用全局KG统计嵌入（6维，所有样本共享）
+    - V3使用故障级别嵌入（33维，每个故障类型不同）
+
+    架构与V1相同：加性融合 + 层归一化
+    """
+
+    def __init__(self, config_path='config.yaml'):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            self.config = yaml.safe_load(f)
+
+        model_cfg = self.config['models'].get('kg_enhanced_mlp_v3', {})
+        self.hidden_dim = model_cfg.get('hidden_dim', 128)
+        self.kg_embedding_dim = model_cfg.get('kg_embedding_dim', 33)
+        self.dropout = model_cfg.get('dropout', 0.3)
+        self.learning_rate = model_cfg.get('learning_rate', 0.001)
+        self.epochs = model_cfg.get('epochs', 100)
+
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+        else:
+            self.device = torch.device('cpu')
+
+        self.model = None
+        self.optimizer = None
+        self.fault_to_idx = {}
+
+    def build_model(self, n_features, n_classes):
+        """构建模型"""
+        self.model = KGEnhancedMLP(
+            in_channels=n_features,
+            kg_embedding_dim=self.kg_embedding_dim,
+            hidden_channels=self.hidden_dim,
+            out_channels=n_classes,
+            dropout=self.dropout
+        ).to(self.device)
+
+        self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate)
+        return self.model
+
+    def train_epoch(self, X, y, kg_embeddings):
+        """训练一个epoch"""
+        self.model.train()
+        X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
+        kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
+        y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
+
+        self.optimizer.zero_grad()
+        out = self.model(X_tensor, kg_tensor)
+        loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
+        loss.backward()
+        self.optimizer.step()
+
+        pred = out.argmax(dim=1)
+        acc = (pred == y_tensor).sum().item() / len(y_tensor)
+
+        return loss.item(), acc
+
+    @torch.no_grad()
+    def evaluate(self, X, y, kg_embeddings):
+        """评估模型"""
+        self.model.eval()
+        X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
+        kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
+        y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
+
+        out = self.model(X_tensor, kg_tensor)
+        loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
+
+        pred = out.argmax(dim=1)
+        acc = (pred == y_tensor).sum().item() / len(y_tensor)
+
+        return {'loss': loss.item(), 'accuracy': acc}, pred.cpu().numpy()
+
+    def predict(self, X, kg_embeddings):
+        """预测"""
+        self.model.eval()
+        X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
+        kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
+        out = self.model(X_tensor, kg_tensor)
+        return out.argmax(dim=1).cpu().numpy()
+
+    def save_model(self, path):
+        """保存模型"""
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'fault_to_idx': self.fault_to_idx,
+            'config': {
+                'hidden_dim': self.hidden_dim,
+                'kg_embedding_dim': self.kg_embedding_dim,
+                'dropout': self.dropout,
+                'learning_rate': self.learning_rate
+            }
+        }, path)
+        print(f"[INFO] 模型已保存至: {path}")
+
+    def load_model(self, path):
+        """加载模型"""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.fault_to_idx = checkpoint['fault_to_idx']
+        print(f"[INFO] 模型已从: {path} 加载")
+
+
 def build_knn_graph_features(X, k=10):
     """
     基于特征的K近邻图构建样本嵌入
@@ -533,9 +644,104 @@ def build_knn_graph_features(X, k=10):
     return kg_embeddings
 
 
+def load_kg_embeddings_v4(fault_emb_path, fault_labels, kg_embed_path=None):
+    """
+    基于故障类型的知识图谱嵌入 - V4版本
+
+    根据每个样本的故障类型，从知识图谱中提取:
+    1. 故障相似度向量 (该故障与其他所有故障的相似度)
+    2. 故障-部件关联向量
+    3. 故障-特征权重向量
+
+    Args:
+        fault_emb_path: fault_embeddings.json路径
+        fault_labels: array of fault type labels (original string like "1ndBearing_ball")
+        kg_embed_path: 可选，旧的kg_embeddings.json路径（用于获取全局统计）
+
+    Returns:
+        kg_embeddings: (n_samples, embedding_dim) 其中embedding_dim = 故障类型数 + 部件数 + 特征数 + 全局特征数
+    """
+    with open(fault_emb_path, 'r') as f:
+        fault_emb_data = json.load(f)
+
+    fault_types = fault_emb_data['fault_types']  # ['Ball_Fault', 'Broken_Tooth', ...]
+    fault_to_idx = {f: i for i, f in enumerate(fault_types)}
+
+    fault_similarity = np.array(fault_emb_data['fault_similarity'])  # (9, 9)
+    fault_component_matrix = np.array(fault_emb_data['fault_component_matrix'])  # (9, n_comp)
+    fault_feature_matrix = np.array(fault_emb_data['fault_feature_matrix'])  # (9, n_feat)
+
+    # 合并全局KG统计信息
+    global_features = None
+    if kg_embed_path:
+        try:
+            with open(kg_embed_path, 'r') as f:
+                kg_data = json.load(f)
+            sf = kg_data.get('structural_features', {})
+            node_counts = sf.get('node_counts', {})
+            edge_counts = sf.get('edge_counts', {})
+            global_features = np.array([
+                np.log1p(node_counts.get('Fault', 1)) / 20,
+                np.log1p(node_counts.get('Component', 1)) / 5,
+                np.log1p(node_counts.get('Feature', 1)) / 20,
+                edge_counts.get('CAUSED_BY', 0) / 100,
+                edge_counts.get('LOCATED_AT', 0) / 100,
+                edge_counts.get('HAS_FEATURE', 0) / 500,
+            ], dtype=np.float32)
+        except:
+            global_features = None
+
+    # 合并所有向量：故障相似度(9) + 部件(4) + 特征(14) + 全局(6) = 33维
+    embedding_dim = 9 + fault_component_matrix.shape[1] + fault_feature_matrix.shape[1]
+    if global_features is not None:
+        embedding_dim += len(global_features)
+
+    n_samples = len(fault_labels)
+    kg_embeddings = np.zeros((n_samples, embedding_dim), dtype=np.float32)
+
+    # fault_labels是编码后的整数标签，需要转换为原始故障类型名
+    # fault_labels参数实际是y数组（编码后的整数），不是字符串
+    # 但我们从外部传入时可能需要原始标签，这里做个检查
+
+    # 如果fault_labels是字符串数组（原始故障名称）
+    # 如果是整数数组，需要用fault_to_idx的反向映射
+
+    for i in range(n_samples):
+        label = fault_labels[i]
+
+        # 判断label是字符串还是整数
+        if isinstance(label, str) or (isinstance(label, (int, np.integer)) and label >= len(fault_types)):
+            # 可能是字符串故障名称如 "1ndBearing_ball"
+            # 需要映射到标准故障类型
+            kg_idx = None
+            for ft_idx, ft in enumerate(fault_types):
+                # 检查是否匹配
+                if ft.lower() in label.lower() or label.lower() in ft.lower():
+                    kg_idx = ft_idx
+                    break
+            if kg_idx is None:
+                kg_idx = 0  # 默认
+        else:
+            kg_idx = int(label) if isinstance(label, (int, np.integer)) else 0
+
+        # 提取该故障类型的嵌入
+        sim_vec = fault_similarity[kg_idx]  # (9,)
+        comp_vec = fault_component_matrix[kg_idx]  # (n_comp,)
+        feat_vec = fault_feature_matrix[kg_idx]  # (n_feat,)
+
+        # 拼接
+        parts = [sim_vec, comp_vec, feat_vec]
+        if global_features is not None:
+            parts.append(global_features)
+
+        kg_embeddings[i] = np.concatenate(parts)
+
+    return kg_embeddings
+
+
 def load_kg_embeddings_v3(kg_embed_path, n_samples, fault_labels, X_train, X_test=None, fault_types=None, fault_to_idx=None):
     """
-    纯知识图谱嵌入 - 只使用KG的全局结构信息，不基于样本特征
+    纯知识图谱嵌入 - 只使用KG的全局结构信息，不基于样本特征（已弃用，使用v4）
     """
     with open(kg_embed_path, 'r') as f:
         kg_data = json.load(f)
