@@ -37,8 +37,7 @@ def plot_model_comparison(results, save_path='results/figures/model_comparison.p
     name_map = {
         'MLP': 'MLP\n(Baseline)',
         'KG_Enhanced_MLP_V1': 'KG-MLP V1\n(Global Embedding)',
-        'KG_Enhanced_MLP_V2': 'KG-MLP V2\n(Deep Fusion)',
-        'KG_Enhanced_MLP_V3': 'KG-MLP V3\n(Fault-Level Embedding)'
+        'KG_Enhanced_MLP_V2': 'KG-MLP V2\n(Fault-Level Embedding)'
     }
     model_labels = [name_map.get(m, m) for m in models]
 
@@ -114,8 +113,7 @@ def plot_heatmap_comparison(results, save_path='results/figures/metrics_heatmap.
     name_map = {
         'MLP': 'MLP',
         'KG_Enhanced_MLP_V1': 'KG-MLP V1',
-        'KG_Enhanced_MLP_V2': 'KG-MLP V2',
-        'KG_Enhanced_MLP_V3': 'KG-MLP V3'
+        'KG_Enhanced_MLP_V2': 'KG-MLP V2'
     }
     model_labels = [name_map.get(m, m) for m in models]
 
@@ -160,8 +158,7 @@ def plot_improvement_bar(results, save_path='results/figures/improvement_compari
     name_map = {
         'MLP': 'MLP\n(Baseline)',
         'KG_Enhanced_MLP_V1': 'KG-MLP V1',
-        'KG_Enhanced_MLP_V2': 'KG-MLP V2',
-        'KG_Enhanced_MLP_V3': 'KG-MLP V3'
+        'KG_Enhanced_MLP_V2': 'KG-MLP V2'
     }
     model_labels = [name_map.get(m, m) for m in models]
 
@@ -198,8 +195,7 @@ def generate_summary_report(results, save_path='results/figures/summary_report.p
     name_map = {
         'MLP': 'MLP',
         'KG_Enhanced_MLP_V1': 'KG-MLP V1',
-        'KG_Enhanced_MLP_V2': 'KG-MLP V2',
-        'KG_Enhanced_MLP_V3': 'KG-MLP V3'
+        'KG_Enhanced_MLP_V2': 'KG-MLP V2'
     }
     model_labels = [name_map.get(m, m) for m in models]
 

@@ -18,7 +18,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
 from tqdm import tqdm
 
-from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, KGEnhancedMLPV3Model, load_kg_embeddings_v3, load_kg_embeddings_v4
+from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4
 
 
 class Evaluator:
@@ -98,7 +98,7 @@ class Evaluator:
             len(self.X_test), None, self.X_train, self.X_test
         )
 
-        # V2/V3嵌入：使用新的故障级别KG嵌入（33维）
+        # V2嵌入：使用故障级别KG嵌入（33维）
         self.kg_train_emb = load_kg_embeddings_v4(
             'data/processed/fault_embeddings.json',
             fault_labels_train,
@@ -119,7 +119,7 @@ class Evaluator:
         print(f"验证集: {len(self.X_val)} 样本")
         print(f"测试集: {len(self.X_test)} 样本")
         print(f"V1 KG嵌入维度: {self.kg_train_emb_v1.shape}")
-        print(f"V2/V3 KG嵌入维度: {self.kg_train_emb.shape}")
+        print(f"V2 KG嵌入维度: {self.kg_train_emb.shape}")
 
     def get_available_models(self):
         """检测models文件夹中可用的模型"""
@@ -129,7 +129,6 @@ class Evaluator:
         mlp_path = models_dir / 'mlp_model.pt'
         kg_v1_path = models_dir / 'kg_enhanced_mlp_v1_model.pt'
         kg_v2_path = models_dir / 'kg_enhanced_mlp_v2_model.pt'
-        kg_v3_path = models_dir / 'kg_enhanced_mlp_v3_model.pt'
 
         if mlp_path.exists():
             available['MLP'] = mlp_path
@@ -137,8 +136,6 @@ class Evaluator:
             available['KG_Enhanced_MLP_V1'] = kg_v1_path
         if kg_v2_path.exists():
             available['KG_Enhanced_MLP_V2'] = kg_v2_path
-        if kg_v3_path.exists():
-            available['KG_Enhanced_MLP_V3'] = kg_v3_path
 
         return available
 
@@ -154,41 +151,33 @@ class Evaluator:
 
     def load_kg_mlp_v1(self):
         """加载KG增强MLP V1模型"""
+        checkpoint = torch.load('models/kg_enhanced_mlp_v1_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+
         model = KGEnhancedMLPModel(config_path='config.yaml')
-        model.hidden_dim = self.best_config['hidden_dim']
-        model.dropout = self.best_config['dropout']
-        model.learning_rate = self.best_config['lr']
+        model.hidden_dim = saved_config.get('hidden_dim', self.best_config['hidden_dim'])
+        model.dropout = saved_config.get('dropout', self.best_config['dropout'])
+        model.learning_rate = saved_config.get('learning_rate', self.best_config['lr'])
         model.fault_to_idx = self.fault_to_idx
         model.build_model(self.X_train.shape[1], len(self.fault_types))
-        checkpoint = torch.load('models/kg_enhanced_mlp_v1_model.pt', map_location=model.device)
         model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] KG-MLP V1模型已加载")
+        print(f"[INFO] KG-MLP V1模型已加载 (hidden_dim={model.hidden_dim})")
         return model
 
     def load_kg_mlp_v2(self):
         """加载KG增强MLP V2模型"""
-        model = KGEnhancedMLPV2Model(config_path='config.yaml')
-        model.hidden_dim = self.best_config['hidden_dim']
-        model.dropout = self.best_config['dropout']
-        model.learning_rate = self.best_config['lr']
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-        checkpoint = torch.load('models/kg_enhanced_mlp_v2_model.pt', map_location=model.device)
-        model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] KG-MLP V2模型已加载")
-        return model
+        checkpoint = torch.load('models/kg_enhanced_mlp_v2_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
 
-    def load_kg_mlp_v3(self):
-        """加载KG增强MLP V3模型"""
-        model = KGEnhancedMLPV3Model(config_path='config.yaml')
-        model.hidden_dim = self.best_config['hidden_dim']
-        model.dropout = self.best_config['dropout']
-        model.learning_rate = self.best_config['lr']
+        model = KGEnhancedMLPV2Model(config_path='config.yaml')
+        model.hidden_dim = saved_config.get('hidden_dim', self.best_config['hidden_dim'])
+        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
+        model.dropout = saved_config.get('dropout', self.best_config['dropout'])
+        model.learning_rate = saved_config.get('learning_rate', self.best_config['lr'])
         model.fault_to_idx = self.fault_to_idx
         model.build_model(self.X_train.shape[1], len(self.fault_types))
-        checkpoint = torch.load('models/kg_enhanced_mlp_v3_model.pt', map_location=model.device)
         model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] KG-MLP V3模型已加载")
+        print(f"[INFO] KG-MLP V2模型已加载 (hidden_dim={model.hidden_dim})")
         return model
 
     def evaluate_model(self, model, X, y, kg_emb=None, model_name="Model"):
@@ -244,10 +233,6 @@ class Evaluator:
                 test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb_v1, model_name)
             elif model_name == 'KG_Enhanced_MLP_V2':
                 model = self.load_kg_mlp_v2()
-                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb_v1, model_name)
-                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb_v1, model_name)
-            elif model_name == 'KG_Enhanced_MLP_V3':
-                model = self.load_kg_mlp_v3()
                 val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
                 test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
 
@@ -267,7 +252,7 @@ class Evaluator:
         print("=" * 60)
         print(f"{'模型':<25} | {'验证集准确率':<12} | {'测试集准确率':<12} | {'验证F1':<10} | {'测试F1':<10}")
         print("-" * 80)
-        for model_name in ['MLP', 'KG_Enhanced_MLP_V1', 'KG_Enhanced_MLP_V2', 'KG_Enhanced_MLP_V3']:
+        for model_name in ['MLP', 'KG_Enhanced_MLP_V1', 'KG_Enhanced_MLP_V2']:
             if model_name in results['validation']:
                 val = results['validation'][model_name]
                 test = results['test'][model_name]

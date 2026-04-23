@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-04-22 22:08:43",
+  "timestamp": "2026-04-23 13:52:57",
   "best_config": {
     "hidden_dim": 128,
     "dropout": 0.215,
@@ -7,8 +7,8 @@
     "weight_decay": 0.00021
   },
   "models": {
-    "KG_Enhanced_MLP_V3": {
-      "val_accuracy": 0.8284028145570099
+    "KG_Enhanced_MLP_V2": {
+      "val_accuracy": 0.8299160172505107
     }
   }
 }

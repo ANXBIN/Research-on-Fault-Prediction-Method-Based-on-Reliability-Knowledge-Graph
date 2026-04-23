@@ -80,13 +80,6 @@ models:
 
   kg_enhanced_mlp_v2:
     hidden_dim: 128
-    kg_embedding_dim: 64
-    dropout: 0.3
-    learning_rate: 0.001
-    epochs: 100
-
-  kg_enhanced_mlp_v3:
-    hidden_dim: 128
     kg_embedding_dim: 33
     dropout: 0.3
     learning_rate: 0.001

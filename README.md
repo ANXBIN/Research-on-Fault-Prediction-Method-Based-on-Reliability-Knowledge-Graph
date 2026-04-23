@@ -1,7 +1,5 @@
 # 基于可靠性知识图谱的故障预测系统
 
-西安交通大学硕士学位论文相关研究项目，实现知识图谱与深度学习结合的变速箱故障预测。
-
 ## 项目结构
 
 ```
@@ -17,13 +15,12 @@ fault-prediction/
 │       ├── processed_features.csv    # 特征数据
 │       ├── knowledge_graph.json      # 知识图谱数据
 │       ├── kg_embeddings.json        # 全局KG嵌入（旧版）
-│       └── fault_embeddings.json     # 故障级别嵌入（V2/V3使用）
+│       └── fault_embeddings.json     # 故障级别嵌入（V2使用）
 
 ├── models/                  # 保存的模型文件
 │   ├── mlp_model.pt
 │   ├── kg_enhanced_mlp_v1_model.pt   # V1: 全局嵌入
-│   ├── kg_enhanced_mlp_v2_model.pt   # V2: 深度融合
-│   └── kg_enhanced_mlp_v3_model.pt   # V3: 故障级别嵌入
+│   └── kg_enhanced_mlp_v2_model.pt   # V2: 故障级别嵌入
 
 ├── results/                 # 结果输出目录
 │   ├── training_results.json    # 训练结果
@@ -68,8 +65,8 @@ python train.py --all
 # 仅训练特定模型
 python train.py --mlp          # 仅训练普通MLP
 python train.py --kg-v1        # 仅训练KG-MLP V1 (全局嵌入)
-python train.py --kg-v2        # 仅训练KG-MLP V2 (深度融合)
-python train.py --kg-v3        # 仅训练KG-MLP V3 (故障级别嵌入)
+python train.py --kg-v2        # 仅训练KG-MLP V2 (故障级别嵌入)
+python train.py --kg-v2        # 仅训练KG-MLP V2 (故障级别嵌入)
 ```
 
 ### 评估模型
@@ -93,20 +90,11 @@ KG嵌入   → KG编码器  → ↗
 - **嵌入维度**：64维（6维投影）
 - 特点：特征与KG嵌入分别编码后加性融合
 
-### 3. KG-Deep Fusion MLP V2（深度融合）
+### 3. KG-Enhanced MLP V2（故障级别嵌入）
 ```
-输入特征 → 特征编码器 ─┐
-                         ├→ 双线性交互 → 门控融合 → 深度融合 → 分类头 → 输出
-KG嵌入   → KG编码器  ─┘
+输入特征 → 特征编码器 → + → 融合层 → 分类头 → 输出
+KG嵌入   → KG编码器  → ↗
 ```
-- **嵌入类型**：故障级别嵌入（33维），与V3相同
-- 特点：
-  - 双线性交互层学习特征与KG的高阶交互
-  - 门控机制自适应调整特征与KG信息权重
-  - 更深的融合层（2层MLP）
-
-### 4. KG-Enhanced MLP V3（故障级别嵌入）
-- **架构**：与V1相同（加性融合）
 - **嵌入类型**：故障级别嵌入（33维），每个故障类型不同
 - 特点：
   - 故障相似度向量（该故障与其他9种故障的相似度）
@@ -130,7 +118,7 @@ KG嵌入   → KG编码器  ─┘
 
 投影至64维，所有样本共享。
 
-### V2/V3嵌入（故障级别，33维）
+### V2嵌入（故障级别，33维）
 
 从Neo4j知识图谱中提取故障类型级别的结构特征：
 
@@ -192,7 +180,7 @@ weight_decay: 0.00021
 ### 模型文件 (models/)
 - `mlp_model.pt` - 普通MLP模型
 - `kg_enhanced_mlp_v1_model.pt` - KG增强V1模型
-- `kg_enhanced_mlp_v2_model.pt` - KG深度融合V2模型
+- `kg_enhanced_mlp_v2_model.pt` - KG故障级别嵌入V2模型
 
 ### 结果文件 (results/)
 - `training_results.json` - 训练过程结果
