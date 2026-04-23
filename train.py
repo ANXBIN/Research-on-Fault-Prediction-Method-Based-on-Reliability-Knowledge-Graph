@@ -22,6 +22,7 @@ import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4
+from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2
 
 
 class Trainer:
@@ -130,7 +131,7 @@ class Trainer:
         print(f"V1 KG嵌入维度: {self.kg_train_emb_v1.shape}")
         print(f"V2 KG嵌入维度: {self.kg_train_emb.shape}")
 
-    def train_mlp(self):
+    def train_mlp(self, epochs=100):
         """训练普通MLP"""
         print("\n" + "=" * 60)
         print("训练 MLP 模型 (传统方法)")
@@ -141,7 +142,7 @@ class Trainer:
         model.build_model(self.X_train.shape[1], len(self.fault_types))
 
         # 进度条
-        pbar = tqdm(range(model.epochs), desc="MLP Training")
+        pbar = tqdm(range(epochs), desc="MLP Training")
         for epoch in pbar:
             train_loss, train_acc = model.train_epoch(self.X_train, self.y_train)
             pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
@@ -155,7 +156,7 @@ class Trainer:
 
         return model, val_metrics
 
-    def train_kg_mlp_v1(self, config=None):
+    def train_kg_mlp_v1(self, config=None, epochs=100):
         """训练KG增强MLP V1 - 使用全局KG嵌入"""
         print("\n" + "=" * 60)
         print("训练 KG-Enhanced MLP 模型 (知识图谱增强 V1) - 全局嵌入")
@@ -178,7 +179,7 @@ class Trainer:
         )
 
         # 进度条
-        pbar = tqdm(range(100), desc="KG-MLP V1 Training")
+        pbar = tqdm(range(epochs), desc="KG-MLP V1 Training")
         for epoch in pbar:
             train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb_v1)
             pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
@@ -242,18 +243,117 @@ class Trainer:
 
         return model, val_metrics
 
+    def train_cnn(self, epochs=100, verbose=True):
+        """训练CNN模型"""
+        if verbose:
+            print("\n" + "=" * 60)
+            print("训练 CNN 模型 (1D卷积神经网络)")
+            print("=" * 60)
+
+        model = CNNModel(config_path='config.yaml')
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+
+        # 进度条
+        if verbose:
+            pbar = tqdm(range(epochs), desc="CNN Training")
+        else:
+            pbar = range(epochs)
+
+        for epoch in pbar:
+            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train)
+            if verbose:
+                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
+
+        # 验证集评估
+        val_metrics, _ = model.evaluate(self.X_val, self.y_val)
+
+        if verbose:
+            print(f"CNN 验证集准确率: {val_metrics['accuracy']:.4f}")
+
+        # 保存模型
+        model.save_model('models/cnn_model.pt')
+
+        return model, val_metrics
+
+    def train_cnn_kg(self, epochs=100, verbose=True):
+        """训练CNN + KG融合模型"""
+        if verbose:
+            print("\n" + "=" * 60)
+            print("训练 CNN-KG 融合模型")
+            print("=" * 60)
+
+        model = CNNKGModel(config_path='config.yaml')
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+
+        # 进度条
+        if verbose:
+            pbar = tqdm(range(epochs), desc="CNN-KG Training")
+        else:
+            pbar = range(epochs)
+
+        for epoch in pbar:
+            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb)
+            if verbose:
+                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
+
+        # 验证集评估
+        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
+
+        if verbose:
+            print(f"CNN-KG 验证集准确率: {val_metrics['accuracy']:.4f}")
+
+        # 保存模型
+        model.save_model('models/cnn_kg_model.pt')
+
+        return model, val_metrics
+
+    def train_cnn_kg_v2(self, epochs=100, verbose=True):
+        """训练CNN + KG融合模型 V2 (门控融合)"""
+        if verbose:
+            print("\n" + "=" * 60)
+            print("训练 CNN-KG V2 融合模型 (门控融合)")
+            print("=" * 60)
+
+        model = CNNKGModelV2(config_path='config.yaml')
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+
+        # 进度条
+        if verbose:
+            pbar = tqdm(range(epochs), desc="CNN-KG V2 Training")
+        else:
+            pbar = range(epochs)
+
+        for epoch in pbar:
+            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb)
+            if verbose:
+                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
+
+        # 验证集评估
+        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
+
+        if verbose:
+            print(f"CNN-KG V2 验证集准确率: {val_metrics['accuracy']:.4f}")
+
+        # 保存模型
+        model.save_model('models/cnn_kg_v2_model.pt')
+
+        return model, val_metrics
+
     def save_results(self, results):
         """保存训练结果"""
         with open('results/training_results.json', 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         print(f"\n结果已保存至: results/training_results.json")
 
-    def run(self, train_mlp=True, train_kg_v1=True, train_kg_v2=True):
+    def run(self, train_mlp=True, train_kg_v1=True, train_kg_v2=True, train_cnn=True, train_cnn_kg=True, train_cnn_kg_v2=True, epochs=100):
         """运行完整训练流程"""
         print("\n" + "=" * 60)
         print("开始训练流程")
         print("=" * 60)
-        print(f"训练选项: MLP={train_mlp}, KG-V1={train_kg_v1}, KG-V2={train_kg_v2}")
+        print(f"训练选项: MLP={train_mlp}, KG-V1={train_kg_v1}, KG-V2={train_kg_v2}, CNN={train_cnn}, CNN_KG={train_cnn_kg}, CNN_KG_V2={train_cnn_kg_v2}, epochs={epochs}")
 
         results = {
             'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -262,16 +362,28 @@ class Trainer:
         }
 
         if train_mlp:
-            mlp_model, mlp_val = self.train_mlp()
+            mlp_model, mlp_val = self.train_mlp(epochs=epochs)
             results['models']['MLP'] = {'val_accuracy': float(mlp_val['accuracy'])}
 
         if train_kg_v1:
-            kg_mlp_v1, kg_mlp_v1_val = self.train_kg_mlp_v1()
+            kg_mlp_v1, kg_mlp_v1_val = self.train_kg_mlp_v1(epochs=epochs)
             results['models']['KG_Enhanced_MLP_V1'] = {'val_accuracy': float(kg_mlp_v1_val['accuracy'])}
 
         if train_kg_v2:
-            kg_mlp_v2, kg_mlp_v2_val = self.train_kg_mlp_v2()
+            kg_mlp_v2, kg_mlp_v2_val = self.train_kg_mlp_v2(epochs=epochs)
             results['models']['KG_Enhanced_MLP_V2'] = {'val_accuracy': float(kg_mlp_v2_val['accuracy'])}
+
+        if train_cnn:
+            cnn_model, cnn_val = self.train_cnn(epochs=epochs)
+            results['models']['CNN'] = {'val_accuracy': float(cnn_val['accuracy'])}
+
+        if train_cnn_kg:
+            cnn_kg_model, cnn_kg_val = self.train_cnn_kg(epochs=epochs)
+            results['models']['CNN_KG'] = {'val_accuracy': float(cnn_kg_val['accuracy'])}
+
+        if train_cnn_kg_v2:
+            cnn_kg_v2_model, cnn_kg_v2_val = self.train_cnn_kg_v2(epochs=epochs)
+            results['models']['CNN_KG_V2'] = {'val_accuracy': float(cnn_kg_v2_val['accuracy'])}
 
         # 保存结果
         self.save_results(results)
@@ -418,13 +530,17 @@ def main():
     parser.add_argument('--mlp', action='store_true', help='训练MLP模型')
     parser.add_argument('--kg-v1', action='store_true', help='训练KG-MLP V1模型 (全局嵌入)')
     parser.add_argument('--kg-v2', action='store_true', help='训练KG-MLP V2模型 (故障级别嵌入)')
+    parser.add_argument('--cnn', action='store_true', help='训练CNN模型')
+    parser.add_argument('--cnn-kg', action='store_true', help='训练CNN-KG融合模型')
+    parser.add_argument('--cnn-kg-v2', action='store_true', help='训练CNN-KG融合模型 V2 (门控融合)')
     parser.add_argument('--tune-v2', action='store_true', help='对V2模型进行贝叶斯优化调优')
     parser.add_argument('--n-trials', type=int, default=30, help='调优试验次数 (默认30)')
     parser.add_argument('--timeout', type=int, default=180, help='每试验超时秒数 (默认180)')
+    parser.add_argument('--epochs', type=int, default=100, help='训练轮数 (默认100)')
     parser.add_argument('--all', action='store_true', help='训练所有模型')
     args = parser.parse_args()
 
-    # 调优模式
+    # V2调优模式
     if args.tune_v2:
         print("=" * 60)
         print("V2模型调优模式")
@@ -443,18 +559,21 @@ def main():
 
     # 常规训练模式
     if args.all:
-        train_mlp = train_kg_v1 = train_kg_v2 = True
+        train_mlp = train_kg_v1 = train_kg_v2 = train_cnn = train_cnn_kg = train_cnn_kg_v2 = True
     else:
-        train_mlp = args.mlp or (not (args.kg_v1 or args.kg_v2))
+        train_mlp = args.mlp or (not (args.kg_v1 or args.kg_v2 or args.cnn or args.cnn_kg or args.cnn_kg_v2))
         train_kg_v1 = args.kg_v1
         train_kg_v2 = args.kg_v2
+        train_cnn = args.cnn
+        train_cnn_kg = args.cnn_kg
+        train_cnn_kg_v2 = args.cnn_kg_v2
 
-    if not (train_mlp or train_kg_v1 or train_kg_v2):
-        print("请选择要训练的模型，使用 --mlp, --kg-v1, --kg-v2, --tune-v2 或 --all")
+    if not (train_mlp or train_kg_v1 or train_kg_v2 or train_cnn or train_cnn_kg or train_cnn_kg_v2):
+        print("请选择要训练的模型，使用 --mlp, --kg-v1, --kg-v2, --cnn, --cnn-kg, --cnn-kg-v2, --tune-v2 或 --all")
         return
 
     trainer = Trainer()
-    trainer.run(train_mlp=train_mlp, train_kg_v1=train_kg_v1, train_kg_v2=train_kg_v2)
+    trainer.run(train_mlp=train_mlp, train_kg_v1=train_kg_v1, train_kg_v2=train_kg_v2, train_cnn=train_cnn, train_cnn_kg=train_cnn_kg, train_cnn_kg_v2=train_cnn_kg_v2, epochs=args.epochs)
 
 
 if __name__ == '__main__':
