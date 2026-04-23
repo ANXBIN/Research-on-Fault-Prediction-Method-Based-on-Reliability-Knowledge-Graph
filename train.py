@@ -22,7 +22,7 @@ import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4
-from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2
+from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2, CNNKGModelV3
 
 
 class Trainer:
@@ -342,18 +342,51 @@ class Trainer:
 
         return model, val_metrics
 
+    def train_cnn_kg_v3(self, epochs=100, verbose=True):
+        """训练CNN + KG融合模型 V3 (残差连接)"""
+        if verbose:
+            print("\n" + "=" * 60)
+            print("训练 CNN-KG V3 融合模型 (残差连接)")
+            print("=" * 60)
+
+        model = CNNKGModelV3(config_path='config.yaml')
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+
+        # 进度条
+        if verbose:
+            pbar = tqdm(range(epochs), desc="CNN-KG V3 Training")
+        else:
+            pbar = range(epochs)
+
+        for epoch in pbar:
+            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb)
+            if verbose:
+                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
+
+        # 验证集评估
+        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
+
+        if verbose:
+            print(f"CNN-KG V3 验证集准确率: {val_metrics['accuracy']:.4f}")
+
+        # 保存模型
+        model.save_model('models/cnn_kg_v3_model.pt')
+
+        return model, val_metrics
+
     def save_results(self, results):
         """保存训练结果"""
         with open('results/training_results.json', 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         print(f"\n结果已保存至: results/training_results.json")
 
-    def run(self, train_mlp=True, train_kg_v1=True, train_kg_v2=True, train_cnn=True, train_cnn_kg=True, train_cnn_kg_v2=True, epochs=100):
+    def run(self, train_mlp=True, train_kg_v1=True, train_kg_v2=True, train_cnn=True, train_cnn_kg=True, train_cnn_kg_v2=True, train_cnn_kg_v3=True, epochs=100):
         """运行完整训练流程"""
         print("\n" + "=" * 60)
         print("开始训练流程")
         print("=" * 60)
-        print(f"训练选项: MLP={train_mlp}, KG-V1={train_kg_v1}, KG-V2={train_kg_v2}, CNN={train_cnn}, CNN_KG={train_cnn_kg}, CNN_KG_V2={train_cnn_kg_v2}, epochs={epochs}")
+        print(f"训练选项: MLP={train_mlp}, KG-V1={train_kg_v1}, KG-V2={train_kg_v2}, CNN={train_cnn}, CNN_KG={train_cnn_kg}, CNN_KG_V2={train_cnn_kg_v2}, CNN_KG_V3={train_cnn_kg_v3}, epochs={epochs}")
 
         results = {
             'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -385,6 +418,10 @@ class Trainer:
             cnn_kg_v2_model, cnn_kg_v2_val = self.train_cnn_kg_v2(epochs=epochs)
             results['models']['CNN_KG_V2'] = {'val_accuracy': float(cnn_kg_v2_val['accuracy'])}
 
+        if train_cnn_kg_v3:
+            cnn_kg_v3_model, cnn_kg_v3_val = self.train_cnn_kg_v3(epochs=epochs)
+            results['models']['CNN_KG_V3'] = {'val_accuracy': float(cnn_kg_v3_val['accuracy'])}
+
         # 保存结果
         self.save_results(results)
 
@@ -404,16 +441,14 @@ class Trainer:
 class V2Tuner:
     """V2模型贝叶斯调优器"""
 
-    def __init__(self, trainer, n_trials=30, timeout_per_trial=120):
+    def __init__(self, trainer, n_trials=30):
         """
         Args:
             trainer: Trainer实例
             n_trials: 试验次数
-            timeout_per_trial: 每个试验超时时间（秒）
         """
         self.trainer = trainer
         self.n_trials = n_trials
-        self.timeout_per_trial = timeout_per_trial
         self.study = None
         self.best_params = None
 
@@ -446,7 +481,7 @@ class V2Tuner:
         print("\n" + "=" * 60)
         print("开始V2模型贝叶斯优化调优")
         print("=" * 60)
-        print(f"试验次数: {self.n_trials}, 每试验超时: {self.timeout_per_trial}秒")
+        print(f"试验次数: {self.n_trials}")
         print(f"验证集样本数: {len(self.trainer.X_val)}")
 
         # 创建研究
@@ -459,7 +494,6 @@ class V2Tuner:
         self.study.optimize(
             self.objective,
             n_trials=self.n_trials,
-            timeout=self.timeout_per_trial,
             show_progress_bar=True
         )
 
@@ -525,6 +559,317 @@ class V2Tuner:
         print(f"\n调优结果已保存至: {path}")
 
 
+class BatchTuner:
+    """批量模型调优器 - 同时调优所有模型"""
+
+    def __init__(self, trainer, n_trials=20):
+        """
+        Args:
+            trainer: Trainer实例
+            n_trials: 每个模型的试验次数
+        """
+        self.trainer = trainer
+        self.n_trials = n_trials
+        self.results = {}
+
+    def tune_mlp(self, trial):
+        """MLP调优目标"""
+        hidden_dim = trial.suggest_categorical('hidden_dim', [64, 96, 128, 160, 192, 256])
+        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.05)
+        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
+        weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+
+        # 临时修改配置
+        model = MLPModel(config_path='config.yaml')
+        original_hidden = model.hidden_dim
+        original_dropout = model.dropout
+        original_lr = model.learning_rate
+
+        model.hidden_dim = hidden_dim
+        model.dropout = dropout
+        model.learning_rate = lr
+        model.fault_to_idx = self.trainer.fault_to_idx
+        model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+        model.optimizer = torch.optim.Adam(model.model.parameters(), lr=lr, weight_decay=weight_decay)
+
+        # 训练
+        for epoch in range(30):
+            model.train_epoch(self.trainer.X_train, self.trainer.y_train)
+
+        # 评估
+        val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val)
+
+        # 恢复配置
+        model.hidden_dim = original_hidden
+        model.dropout = original_dropout
+        model.learning_rate = original_lr
+
+        return val_metrics['accuracy']
+
+    def tune_kg_mlp_v1(self, trial):
+        """KG-MLP V1调优目标"""
+        hidden_dim = trial.suggest_categorical('hidden_dim', [64, 96, 128, 160, 192])
+        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.05)
+        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
+        weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+
+        config = {
+            'hidden_dim': hidden_dim,
+            'dropout': dropout,
+            'lr': lr,
+            'weight_decay': weight_decay
+        }
+
+        model, val_metrics = self.trainer.train_kg_mlp_v1(config=config, epochs=30)
+        return val_metrics['accuracy']
+
+    def tune_kg_mlp_v2(self, trial):
+        """KG-MLP V2调优目标"""
+        hidden_dim = trial.suggest_categorical('hidden_dim', [64, 96, 128, 160, 192])
+        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.05)
+        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
+        weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+
+        config = {
+            'hidden_dim': hidden_dim,
+            'dropout': dropout,
+            'lr': lr,
+            'weight_decay': weight_decay
+        }
+
+        model, val_metrics = self.trainer.train_kg_mlp_v2(config=config, epochs=30, verbose=False)
+        return val_metrics['accuracy']
+
+    def tune_cnn(self, trial):
+        """CNN调优目标"""
+        hidden_dim = trial.suggest_categorical('hidden_channels', [32, 64, 96, 128])
+        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.05)
+        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
+
+        model = CNNModel(config_path='config.yaml')
+        model.hidden_dim = hidden_dim
+        model.dropout = dropout
+        model.learning_rate = lr
+        model.fault_to_idx = self.trainer.fault_to_idx
+        model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+
+        for epoch in range(30):
+            model.train_epoch(self.trainer.X_train, self.trainer.y_train)
+
+        val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val)
+        return val_metrics['accuracy']
+
+    def tune_cnn_kg(self, trial):
+        """CNN-KG调优目标"""
+        hidden_dim = trial.suggest_categorical('hidden_channels', [32, 64, 96, 128])
+        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.05)
+        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
+
+        model = CNNKGModel(config_path='config.yaml')
+        model.hidden_dim = hidden_dim
+        model.dropout = dropout
+        model.learning_rate = lr
+        model.fault_to_idx = self.trainer.fault_to_idx
+        model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+
+        for epoch in range(30):
+            model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
+
+        val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
+        return val_metrics['accuracy']
+
+    def tune_cnn_kg_v2(self, trial):
+        """CNN-KG V2调优目标"""
+        hidden_dim = trial.suggest_categorical('hidden_channels', [32, 64, 96, 128])
+        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.05)
+        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
+
+        model = CNNKGModelV2(config_path='config.yaml')
+        model.hidden_dim = hidden_dim
+        model.dropout = dropout
+        model.learning_rate = lr
+        model.fault_to_idx = self.trainer.fault_to_idx
+        model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+
+        for epoch in range(30):
+            model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
+
+        val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
+        return val_metrics['accuracy']
+
+    def tune_cnn_kg_v3(self, trial):
+        """CNN-KG V3调优目标"""
+        hidden_dim = trial.suggest_categorical('hidden_channels', [32, 64, 96, 128])
+        dropout = trial.suggest_float('dropout', 0.1, 0.4, step=0.05)
+        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
+
+        model = CNNKGModelV3(config_path='config.yaml')
+        model.hidden_dim = hidden_dim
+        model.dropout = dropout
+        model.learning_rate = lr
+        model.fault_to_idx = self.trainer.fault_to_idx
+        model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+
+        for epoch in range(30):
+            model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
+
+        val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
+        return val_metrics['accuracy']
+
+    def tune_all(self):
+        """批量调优所有模型"""
+        models_config = [
+            ('MLP', self.tune_mlp),
+            ('KG-MLP V1', self.tune_kg_mlp_v1),
+            ('KG-MLP V2', self.tune_kg_mlp_v2),
+            ('CNN', self.tune_cnn),
+            ('CNN-KG', self.tune_cnn_kg),
+            ('CNN-KG V2', self.tune_cnn_kg_v2),
+            ('CNN-KG V3', self.tune_cnn_kg_v3),
+        ]
+
+        print("\n" + "=" * 60)
+        print("批量模型调优")
+        print("=" * 60)
+        print(f"每个模型试验次数: {self.n_trials}")
+        print(f"验证集样本数: {len(self.trainer.X_val)}")
+        print("=" * 60)
+
+        for model_name, objective_fn in models_config:
+            print(f"\n{'='*60}")
+            print(f"正在调优: {model_name}")
+            print(f"{'='*60}")
+
+            study = optuna.create_study(
+                direction='maximize',
+                sampler=optuna.samplers.TPESampler(seed=42)
+            )
+
+            study.optimize(
+                objective_fn,
+                n_trials=self.n_trials,
+                show_progress_bar=True
+            )
+
+            self.results[model_name] = {
+                'best_params': study.best_params,
+                'best_value': study.best_value,
+                'n_trials': len(study.trials)
+            }
+
+            print(f"  最佳准确率: {study.best_value:.4f}")
+            print(f"  最佳参数: {study.best_params}")
+
+        return self.results
+
+    def train_all_best(self, epochs=100):
+        """使用各模型最佳参数训练"""
+        print("\n" + "=" * 60)
+        print("使用最佳参数训练所有模型")
+        print("=" * 60)
+
+        trained_models = {}
+
+        # MLP
+        if 'MLP' in self.results:
+            model = MLPModel(config_path='config.yaml')
+            for k, v in self.results['MLP']['best_params'].items():
+                setattr(model, k, v)
+            model.fault_to_idx = self.trainer.fault_to_idx
+            model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+            for epoch in range(epochs):
+                model.train_epoch(self.trainer.X_train, self.trainer.y_train)
+            model.save_model('models/mlp_model.pt')
+            val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val)
+            trained_models['MLP'] = val_metrics
+            print(f"MLP - 验证准确率: {val_metrics['accuracy']:.4f}")
+
+        # KG-MLP V1
+        if 'KG-MLP V1' in self.results:
+            model, val_metrics = self.trainer.train_kg_mlp_v1(
+                config=self.results['KG-MLP V1']['best_params'],
+                epochs=epochs
+            )
+            model.save_model('models/kg_enhanced_mlp_v1_model.pt')
+            trained_models['KG_Enhanced_MLP_V1'] = val_metrics
+            print(f"KG-MLP V1 - 验证准确率: {val_metrics['accuracy']:.4f}")
+
+        # KG-MLP V2
+        if 'KG-MLP V2' in self.results:
+            model, val_metrics = self.trainer.train_kg_mlp_v2(
+                config=self.results['KG-MLP V2']['best_params'],
+                epochs=epochs, verbose=False
+            )
+            model.save_model('models/kg_enhanced_mlp_v2_model.pt')
+            trained_models['KG_Enhanced_MLP_V2'] = val_metrics
+            print(f"KG-MLP V2 - 验证准确率: {val_metrics['accuracy']:.4f}")
+
+        # CNN
+        if 'CNN' in self.results:
+            model = CNNModel(config_path='config.yaml')
+            for k, v in self.results['CNN']['best_params'].items():
+                setattr(model, k, v)
+            model.fault_to_idx = self.trainer.fault_to_idx
+            model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+            for epoch in range(epochs):
+                model.train_epoch(self.trainer.X_train, self.trainer.y_train)
+            model.save_model('models/cnn_model.pt')
+            val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val)
+            trained_models['CNN'] = val_metrics
+            print(f"CNN - 验证准确率: {val_metrics['accuracy']:.4f}")
+
+        # CNN-KG
+        if 'CNN-KG' in self.results:
+            model = CNNKGModel(config_path='config.yaml')
+            for k, v in self.results['CNN-KG']['best_params'].items():
+                setattr(model, k, v)
+            model.fault_to_idx = self.trainer.fault_to_idx
+            model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+            for epoch in range(epochs):
+                model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
+            model.save_model('models/cnn_kg_model.pt')
+            val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
+            trained_models['CNN_KG'] = val_metrics
+            print(f"CNN-KG - 验证准确率: {val_metrics['accuracy']:.4f}")
+
+        # CNN-KG V2
+        if 'CNN-KG V2' in self.results:
+            model = CNNKGModelV2(config_path='config.yaml')
+            for k, v in self.results['CNN-KG V2']['best_params'].items():
+                setattr(model, k, v)
+            model.fault_to_idx = self.trainer.fault_to_idx
+            model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+            for epoch in range(epochs):
+                model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
+            model.save_model('models/cnn_kg_v2_model.pt')
+            val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
+            trained_models['CNN_KG_V2'] = val_metrics
+            print(f"CNN-KG V2 - 验证准确率: {val_metrics['accuracy']:.4f}")
+
+        # CNN-KG V3
+        if 'CNN-KG V3' in self.results:
+            model = CNNKGModelV3(config_path='config.yaml')
+            for k, v in self.results['CNN-KG V3']['best_params'].items():
+                setattr(model, k, v)
+            model.fault_to_idx = self.trainer.fault_to_idx
+            model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
+            for epoch in range(epochs):
+                model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
+            model.save_model('models/cnn_kg_v3_model.pt')
+            val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
+            trained_models['CNN_KG_V3'] = val_metrics
+            print(f"CNN-KG V3 - 验证准确率: {val_metrics['accuracy']:.4f}")
+
+        return trained_models
+
+    def save_results(self, path='results/batch_tuning_results.json'):
+        """保存批量调优结果"""
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(self.results, f, indent=2, ensure_ascii=False)
+        print(f"\n批量调优结果已保存至: {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='训练故障预测模型')
     parser.add_argument('--mlp', action='store_true', help='训练MLP模型')
@@ -533,12 +878,32 @@ def main():
     parser.add_argument('--cnn', action='store_true', help='训练CNN模型')
     parser.add_argument('--cnn-kg', action='store_true', help='训练CNN-KG融合模型')
     parser.add_argument('--cnn-kg-v2', action='store_true', help='训练CNN-KG融合模型 V2 (门控融合)')
+    parser.add_argument('--cnn-kg-v3', action='store_true', help='训练CNN-KG融合模型 V3 (残差连接)')
     parser.add_argument('--tune-v2', action='store_true', help='对V2模型进行贝叶斯优化调优')
-    parser.add_argument('--n-trials', type=int, default=30, help='调优试验次数 (默认30)')
-    parser.add_argument('--timeout', type=int, default=180, help='每试验超时秒数 (默认180)')
+    parser.add_argument('--tune-all', action='store_true', help='批量调优所有模型')
+    parser.add_argument('--n-trials', type=int, default=20, help='调优试验次数 (默认20)')
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数 (默认100)')
     parser.add_argument('--all', action='store_true', help='训练所有模型')
     args = parser.parse_args()
+
+    # 批量调优模式
+    if args.tune_all:
+        print("=" * 60)
+        print("批量模型调优模式")
+        print("=" * 60)
+
+        trainer = Trainer()
+        tuner = BatchTuner(trainer, n_trials=args.n_trials)
+        tuner.tune_all()
+        tuner.save_results()
+
+        print("\n" + "=" * 60)
+        print("使用最佳参数训练所有模型...")
+        print("=" * 60)
+        tuner.train_all_best(epochs=args.epochs)
+
+        print("\n批量调优完成！")
+        return
 
     # V2调优模式
     if args.tune_v2:
@@ -547,7 +912,7 @@ def main():
         print("=" * 60)
 
         trainer = Trainer()
-        tuner = V2Tuner(trainer, n_trials=args.n_trials, timeout_per_trial=args.timeout)
+        tuner = V2Tuner(trainer, n_trials=args.n_trials)
         best_params, best_value = tuner.tune()
 
         # 使用最佳参数训练最终模型
@@ -559,21 +924,22 @@ def main():
 
     # 常规训练模式
     if args.all:
-        train_mlp = train_kg_v1 = train_kg_v2 = train_cnn = train_cnn_kg = train_cnn_kg_v2 = True
+        train_mlp = train_kg_v1 = train_kg_v2 = train_cnn = train_cnn_kg = train_cnn_kg_v2 = train_cnn_kg_v3 = True
     else:
-        train_mlp = args.mlp or (not (args.kg_v1 or args.kg_v2 or args.cnn or args.cnn_kg or args.cnn_kg_v2))
+        train_mlp = args.mlp or (not (args.kg_v1 or args.kg_v2 or args.cnn or args.cnn_kg or args.cnn_kg_v2 or args.cnn_kg_v3))
         train_kg_v1 = args.kg_v1
         train_kg_v2 = args.kg_v2
         train_cnn = args.cnn
         train_cnn_kg = args.cnn_kg
         train_cnn_kg_v2 = args.cnn_kg_v2
+        train_cnn_kg_v3 = args.cnn_kg_v3
 
-    if not (train_mlp or train_kg_v1 or train_kg_v2 or train_cnn or train_cnn_kg or train_cnn_kg_v2):
-        print("请选择要训练的模型，使用 --mlp, --kg-v1, --kg-v2, --cnn, --cnn-kg, --cnn-kg-v2, --tune-v2 或 --all")
+    if not (train_mlp or train_kg_v1 or train_kg_v2 or train_cnn or train_cnn_kg or train_cnn_kg_v2 or train_cnn_kg_v3):
+        print("请选择要训练的模型，使用 --mlp, --kg-v1, --kg-v2, --cnn, --cnn-kg, --cnn-kg-v2, --cnn-kg-v3, --tune-v2, --tune-all 或 --all")
         return
 
     trainer = Trainer()
-    trainer.run(train_mlp=train_mlp, train_kg_v1=train_kg_v1, train_kg_v2=train_kg_v2, train_cnn=train_cnn, train_cnn_kg=train_cnn_kg, train_cnn_kg_v2=train_cnn_kg_v2, epochs=args.epochs)
+    trainer.run(train_mlp=train_mlp, train_kg_v1=train_kg_v1, train_kg_v2=train_kg_v2, train_cnn=train_cnn, train_cnn_kg=train_cnn_kg, train_cnn_kg_v2=train_cnn_kg_v2, train_cnn_kg_v3=train_cnn_kg_v3, epochs=args.epochs)
 
 
 if __name__ == '__main__':

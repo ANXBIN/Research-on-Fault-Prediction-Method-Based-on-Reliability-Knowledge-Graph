@@ -105,6 +105,13 @@ models:
     learning_rate: 0.001
     epochs: 100
 
+  cnn_kg_v3:
+    hidden_channels: 64
+    kg_embedding_dim: 33
+    dropout: 0.2
+    learning_rate: 0.001
+    epochs: 100
+
 # 训练配置
 training:
   test_size: 0.2

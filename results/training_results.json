@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-04-23 16:46:25",
+  "timestamp": "2026-04-23 16:55:03",
   "best_config": {
     "hidden_dim": 128,
     "dropout": 0.215,
@@ -7,23 +7,8 @@
     "weight_decay": 0.00021
   },
   "models": {
-    "MLP": {
-      "val_accuracy": 0.6867670424453356
-    },
-    "KG_Enhanced_MLP_V1": {
-      "val_accuracy": 0.7591737913293486
-    },
-    "KG_Enhanced_MLP_V2": {
-      "val_accuracy": 0.8386169327381403
-    },
-    "CNN": {
-      "val_accuracy": 0.7090111220397972
-    },
-    "CNN_KG": {
-      "val_accuracy": 0.7953393357040176
-    },
-    "CNN_KG_V2": {
-      "val_accuracy": 0.8070666565786487
+    "CNN_KG_V3": {
+      "val_accuracy": 0.8150109707195279
     }
   }
 }

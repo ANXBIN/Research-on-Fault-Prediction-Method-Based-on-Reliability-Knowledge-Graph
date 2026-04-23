@@ -1,0 +1,68 @@
+{
+  "MLP": {
+    "best_params": {
+      "hidden_dim": 160,
+      "dropout": 0.1,
+      "lr": 0.03908898304334434,
+      "weight_decay": 4.3440127252109814e-05
+    },
+    "best_value": 0.7109026254066733,
+    "n_trials": 30
+  },
+  "KG-MLP V1": {
+    "best_params": {
+      "hidden_dim": 128,
+      "dropout": 0.1,
+      "lr": 0.01129013355909268,
+      "weight_decay": 0.00020914981329035596
+    },
+    "best_value": 0.7030339714004691,
+    "n_trials": 30
+  },
+  "KG-MLP V2": {
+    "best_params": {
+      "hidden_dim": 192,
+      "dropout": 0.15000000000000002,
+      "lr": 0.0032286437621112515,
+      "weight_decay": 0.001483505166121041
+    },
+    "best_value": 0.7990466823030945,
+    "n_trials": 30
+  },
+  "CNN": {
+    "best_params": {
+      "hidden_channels": 128,
+      "dropout": 0.25,
+      "lr": 0.0059573197085131535
+    },
+    "best_value": 0.6870696829840357,
+    "n_trials": 19
+  },
+  "CNN-KG": {
+    "best_params": {
+      "hidden_channels": 96,
+      "dropout": 0.15000000000000002,
+      "lr": 0.0030586566669785274
+    },
+    "best_value": 0.7906484073541651,
+    "n_trials": 17
+  },
+  "CNN-KG V2": {
+    "best_params": {
+      "hidden_channels": 96,
+      "dropout": 0.15000000000000002,
+      "lr": 0.0030586566669785274
+    },
+    "best_value": 0.7927668911250662,
+    "n_trials": 13
+  },
+  "CNN-KG V3": {
+    "best_params": {
+      "hidden_channels": 96,
+      "dropout": 0.1,
+      "lr": 0.0030586566669785274
+    },
+    "best_value": 0.7728682757055307,
+    "n_trials": 11
+  }
+}

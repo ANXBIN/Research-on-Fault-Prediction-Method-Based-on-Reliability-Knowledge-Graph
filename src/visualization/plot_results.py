@@ -15,6 +15,8 @@ import seaborn as sns
 
 plt.style.use('seaborn-v0_8-whitegrid')
 plt.rcParams['figure.facecolor'] = 'white'
+plt.rcParams['font.sans-serif'] = ['Heiti SC', 'Heiti TC', 'STHeiti Medium', 'Songti SC', 'Songti TC', 'Arial Unicode MS', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
 
 
 def load_evaluation_results(results_path='results/evaluation_results.json'):
@@ -40,7 +42,8 @@ def plot_model_comparison(results, save_path='results/figures/model_comparison.p
         'KG_Enhanced_MLP_V2': 'KG-MLP V2\n(Fault-Level Embedding)',
         'CNN': 'CNN\n(1D Conv)',
         'CNN_KG': 'CNN+KG\n(拼接融合)',
-        'CNN_KG_V2': 'CNN+KG V2\n(门控融合)'
+        'CNN_KG_V2': 'CNN+KG V2\n(门控融合)',
+        'CNN_KG_V3': 'CNN+KG V3\n(残差连接)'
     }
     model_labels = [name_map.get(m, m) for m in models]
 
@@ -119,7 +122,8 @@ def plot_heatmap_comparison(results, save_path='results/figures/metrics_heatmap.
         'KG_Enhanced_MLP_V2': 'KG-MLP V2',
         'CNN': 'CNN',
         'CNN_KG': 'CNN+KG',
-        'CNN_KG_V2': 'CNN+KG V2'
+        'CNN_KG_V2': 'CNN+KG V2',
+        'CNN_KG_V3': 'CNN+KG V3'
     }
     model_labels = [name_map.get(m, m) for m in models]
 
@@ -167,7 +171,8 @@ def plot_improvement_bar(results, save_path='results/figures/improvement_compari
         'KG_Enhanced_MLP_V2': 'KG-MLP V2',
         'CNN': 'CNN',
         'CNN_KG': 'CNN+KG',
-        'CNN_KG_V2': 'CNN+KG V2'
+        'CNN_KG_V2': 'CNN+KG V2',
+        'CNN_KG_V3': 'CNN+KG V3'
     }
     model_labels = [name_map.get(m, m) for m in models]
 
@@ -207,7 +212,8 @@ def generate_summary_report(results, save_path='results/figures/summary_report.p
         'KG_Enhanced_MLP_V2': 'KG-MLP V2',
         'CNN': 'CNN',
         'CNN_KG': 'CNN+KG',
-        'CNN_KG_V2': 'CNN+KG V2'
+        'CNN_KG_V2': 'CNN+KG V2',
+        'CNN_KG_V3': 'CNN+KG V3'
     }
     model_labels = [name_map.get(m, m) for m in models]
 
@@ -320,6 +326,93 @@ def generate_summary_report(results, save_path='results/figures/summary_report.p
     print(f"Saved: {save_path}")
 
 
+def plot_kg_enhancement_comparison(results, save_path='results/figures/kg_enhancement_comparison.png'):
+    """Plot KG enhancement effect - CNN vs CNN+KG and MLP vs MLP+KG"""
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # Define comparison pairs
+    mlp_models = ['MLP', 'KG_Enhanced_MLP_V1', 'KG_Enhanced_MLP_V2']
+    cnn_models = ['CNN', 'CNN_KG', 'CNN_KG_V2', 'CNN_KG_V3']
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # MLP vs KG-MLP comparison
+    ax1 = axes[0]
+    mlp_names = ['MLP\n(Baseline)', 'KG-MLP V1\n(Global)', 'KG-MLP V2\n(Fault-Level)']
+    mlp_val = [results['validation'][m]['accuracy'] for m in mlp_models]
+    mlp_test = [results['test'][m]['accuracy'] for m in mlp_models]
+
+    x = np.arange(len(mlp_models))
+    width = 0.35
+
+    bars1 = ax1.bar(x - width/2, mlp_val, width, label='Validation', color='#3498db', alpha=0.8, edgecolor='white')
+    bars2 = ax1.bar(x + width/2, mlp_test, width, label='Test', color='#e74c3c', alpha=0.8, edgecolor='white')
+
+    ax1.set_ylabel('Accuracy', fontsize=12)
+    ax1.set_title('MLP + Knowledge Graph Enhancement', fontsize=14, fontweight='bold')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(mlp_names, fontsize=10)
+    ax1.legend(loc='lower right', fontsize=10)
+    ax1.set_ylim(0.5, 0.9)
+    ax1.grid(axis='y', alpha=0.3)
+
+    # Add value labels and improvement arrows
+    for i, (bar, acc) in enumerate(zip(bars2, mlp_test)):
+        height = bar.get_height()
+        ax1.annotate(f'{acc:.2%}',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=11, fontweight='bold')
+
+        # Show improvement vs baseline
+        if i > 0:
+            improvement = (acc - mlp_test[0]) * 100
+            ax1.annotate(f'+{improvement:.1f}%',
+                        xy=(x[i] + width/2, mlp_test[i]),
+                        xytext=(0, 20), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=9, color='green', fontweight='bold')
+
+    # CNN vs CNN+KG comparison
+    ax2 = axes[1]
+    cnn_names = ['CNN\n(Baseline)', 'CNN+KG\n(拼接)', 'CNN+KG V2\n(门控)', 'CNN+KG V3\n(残差)']
+    cnn_val = [results['validation'][m]['accuracy'] for m in cnn_models]
+    cnn_test = [results['test'][m]['accuracy'] for m in cnn_models]
+
+    x = np.arange(len(cnn_models))
+
+    bars3 = ax2.bar(x - width/2, cnn_val, width, label='Validation', color='#3498db', alpha=0.8, edgecolor='white')
+    bars4 = ax2.bar(x + width/2, cnn_test, width, label='Test', color='#e74c3c', alpha=0.8, edgecolor='white')
+
+    ax2.set_ylabel('Accuracy', fontsize=12)
+    ax2.set_title('CNN + Knowledge Graph Enhancement', fontsize=14, fontweight='bold')
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(cnn_names, fontsize=10)
+    ax2.legend(loc='lower right', fontsize=10)
+    ax2.set_ylim(0.5, 0.9)
+    ax2.grid(axis='y', alpha=0.3)
+
+    # Add value labels and improvement arrows
+    for i, (bar, acc) in enumerate(zip(bars4, cnn_test)):
+        height = bar.get_height()
+        ax2.annotate(f'{acc:.2%}',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=11, fontweight='bold')
+
+        if i > 0:
+            improvement = (acc - cnn_test[0]) * 100
+            ax2.annotate(f'+{improvement:.1f}%',
+                        xy=(x[i] + width/2, cnn_test[i]),
+                        xytext=(0, 20), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=9, color='green', fontweight='bold')
+
+    plt.suptitle('Knowledge Graph Enhancement Effect', fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"Saved: {save_path}")
+
+
 def main():
     results_path = 'results/evaluation_results.json'
 
@@ -338,6 +431,7 @@ def main():
     plot_heatmap_comparison(results)
     plot_improvement_bar(results)
     generate_summary_report(results)
+    plot_kg_enhancement_comparison(results)
 
     print("\nAll visualizations generated!")
 

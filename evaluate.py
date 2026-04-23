@@ -19,7 +19,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from tqdm import tqdm
 
 from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4
-from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2
+from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2, CNNKGModelV3
 
 
 class Evaluator:
@@ -133,6 +133,7 @@ class Evaluator:
         cnn_path = models_dir / 'cnn_model.pt'
         cnn_kg_path = models_dir / 'cnn_kg_model.pt'
         cnn_kg_v2_path = models_dir / 'cnn_kg_v2_model.pt'
+        cnn_kg_v3_path = models_dir / 'cnn_kg_v3_model.pt'
 
         if mlp_path.exists():
             available['MLP'] = mlp_path
@@ -146,17 +147,23 @@ class Evaluator:
             available['CNN_KG'] = cnn_kg_path
         if cnn_kg_v2_path.exists():
             available['CNN_KG_V2'] = cnn_kg_v2_path
+        if cnn_kg_v3_path.exists():
+            available['CNN_KG_V3'] = cnn_kg_v3_path
 
         return available
 
     def load_mlp(self):
         """加载MLP模型"""
+        checkpoint = torch.load('models/mlp_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+
         model = MLPModel(config_path='config.yaml')
+        model.hidden_dim = saved_config.get('hidden_dim', model.hidden_dim)
+        model.dropout = saved_config.get('dropout', model.dropout)
         model.fault_to_idx = self.fault_to_idx
         model.build_model(self.X_train.shape[1], len(self.fault_types))
-        checkpoint = torch.load('models/mlp_model.pt', map_location=model.device)
         model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] MLP模型已加载")
+        print(f"[INFO] MLP模型已加载 (hidden_dim={model.hidden_dim})")
         return model
 
     def load_kg_mlp_v1(self):
@@ -234,6 +241,21 @@ class Evaluator:
         print(f"[INFO] CNN-KG V2模型已加载")
         return model
 
+    def load_cnn_kg_v3(self):
+        """加载CNN-KG融合模型V3 (残差连接)"""
+        checkpoint = torch.load('models/cnn_kg_v3_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+
+        model = CNNKGModelV3(config_path='config.yaml')
+        model.hidden_dim = saved_config.get('hidden_dim', 64)
+        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
+        model.dropout = saved_config.get('dropout', 0.2)
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+        model.model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"[INFO] CNN-KG V3模型已加载")
+        return model
+
     def evaluate_model(self, model, X, y, kg_emb=None, model_name="Model"):
         """评估单个模型"""
         if kg_emb is not None:
@@ -299,6 +321,10 @@ class Evaluator:
                 test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
             elif model_name == 'CNN_KG_V2':
                 model = self.load_cnn_kg_v2()
+                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
+                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
+            elif model_name == 'CNN_KG_V3':
+                model = self.load_cnn_kg_v3()
                 val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
                 test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
 
