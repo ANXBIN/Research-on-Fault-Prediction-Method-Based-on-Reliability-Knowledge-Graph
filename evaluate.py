@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4
 from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2, CNNKGModelV3
+from src.models.gnn_model import GNNModel, GNNKGModel
 
 
 class Evaluator:
@@ -134,6 +135,8 @@ class Evaluator:
         cnn_kg_path = models_dir / 'cnn_kg_model.pt'
         cnn_kg_v2_path = models_dir / 'cnn_kg_v2_model.pt'
         cnn_kg_v3_path = models_dir / 'cnn_kg_v3_model.pt'
+        gnn_path = models_dir / 'gnn_model.pt'
+        gnn_kg_path = models_dir / 'gnn_kg_model.pt'
 
         if mlp_path.exists():
             available['MLP'] = mlp_path
@@ -149,6 +152,10 @@ class Evaluator:
             available['CNN_KG_V2'] = cnn_kg_v2_path
         if cnn_kg_v3_path.exists():
             available['CNN_KG_V3'] = cnn_kg_v3_path
+        if gnn_path.exists():
+            available['GNN'] = gnn_path
+        if gnn_kg_path.exists():
+            available['GNN_KG'] = gnn_kg_path
 
         return available
 
@@ -256,6 +263,39 @@ class Evaluator:
         print(f"[INFO] CNN-KG V3模型已加载")
         return model
 
+    def load_gnn(self):
+        """加载GNN模型 (V2改进版)"""
+        checkpoint = torch.load('models/gnn_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+
+        model = GNNModel(config_path='config.yaml')
+        model.hidden_dim = saved_config.get('hidden_dim', 256)
+        model.num_layers = saved_config.get('num_layers', 4)
+        model.dropout = saved_config.get('dropout', 0.3)
+        model.batch_size = saved_config.get('batch_size', 256)
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+        model.model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"[INFO] GNN模型已加载 (hidden_dim={model.hidden_dim})")
+        return model
+
+    def load_gnn_kg(self):
+        """加载GNN-KG融合模型 (V2改进版)"""
+        checkpoint = torch.load('models/gnn_kg_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+
+        model = GNNKGModel(config_path='config.yaml')
+        model.hidden_dim = saved_config.get('hidden_dim', 256)
+        model.num_layers = saved_config.get('num_layers', 4)
+        model.dropout = saved_config.get('dropout', 0.3)
+        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
+        model.batch_size = saved_config.get('batch_size', 256)
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+        model.model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"[INFO] GNN-KG模型已加载 (hidden_dim={model.hidden_dim})")
+        return model
+
     def evaluate_model(self, model, X, y, kg_emb=None, model_name="Model"):
         """评估单个模型"""
         if kg_emb is not None:
@@ -327,6 +367,14 @@ class Evaluator:
                 model = self.load_cnn_kg_v3()
                 val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
                 test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
+            elif model_name == 'GNN':
+                model = self.load_gnn()
+                val, _ = self.evaluate_model(model, self.X_val, self.y_val, None, model_name)
+                test, _ = self.evaluate_model(model, self.X_test, self.y_test, None, model_name)
+            elif model_name == 'GNN_KG':
+                model = self.load_gnn_kg()
+                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
+                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
 
             results['validation'][model_name] = val
             results['test'][model_name] = test
@@ -344,7 +392,7 @@ class Evaluator:
         print("=" * 60)
         print(f"{'模型':<25} | {'验证集准确率':<12} | {'测试集准确率':<12} | {'验证F1':<10} | {'测试F1':<10}")
         print("-" * 80)
-        for model_name in ['MLP', 'KG_Enhanced_MLP_V1', 'KG_Enhanced_MLP_V2', 'CNN', 'CNN_KG', 'CNN_KG_V2']:
+        for model_name in ['MLP', 'KG_Enhanced_MLP_V1', 'KG_Enhanced_MLP_V2', 'CNN', 'CNN_KG', 'CNN_KG_V2', 'GNN', 'GNN_KG']:
             if model_name in results['validation']:
                 val = results['validation'][model_name]
                 test = results['test'][model_name]

@@ -23,6 +23,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4
 from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2, CNNKGModelV3
+from src.models.gnn_model import GNNModel, GNNKGModel
 
 
 class Trainer:
@@ -375,18 +376,82 @@ class Trainer:
 
         return model, val_metrics
 
+    def train_gnn(self, epochs=100, verbose=True):
+        """训练GNN模型 (使用V2改进版)"""
+        if verbose:
+            print("\n" + "=" * 60)
+            print("训练 GNN 模型 (图神经网络)")
+            print("=" * 60)
+
+        model = GNNModel(config_path='config.yaml')
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+
+        if verbose:
+            pbar = tqdm(range(epochs), desc="GNN Training")
+        else:
+            pbar = range(epochs)
+
+        for epoch in pbar:
+            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train)
+            if verbose:
+                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
+
+        # 验证集评估
+        val_metrics, _ = model.evaluate(self.X_val, self.y_val)
+
+        if verbose:
+            print(f"GNN 验证集准确率: {val_metrics['accuracy']:.4f}")
+
+        # 保存模型
+        model.save_model('models/gnn_model.pt')
+
+        return model, val_metrics
+
+    def train_gnn_kg(self, epochs=100, verbose=True):
+        """训练GNN + KG融合模型 (使用V2改进版)"""
+        if verbose:
+            print("\n" + "=" * 60)
+            print("训练 GNN-KG 融合模型")
+            print("=" * 60)
+
+        model = GNNKGModel(config_path='config.yaml')
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+
+        if verbose:
+            pbar = tqdm(range(epochs), desc="GNN-KG Training")
+        else:
+            pbar = range(epochs)
+
+        for epoch in pbar:
+            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb)
+            if verbose:
+                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
+
+        # 验证集评估
+        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
+
+        if verbose:
+            print(f"GNN-KG 验证集准确率: {val_metrics['accuracy']:.4f}")
+
+        # 保存模型
+        model.save_model('models/gnn_kg_model.pt')
+
+        return model, val_metrics
+
     def save_results(self, results):
         """保存训练结果"""
         with open('results/training_results.json', 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         print(f"\n结果已保存至: results/training_results.json")
 
-    def run(self, train_mlp=True, train_kg_v1=True, train_kg_v2=True, train_cnn=True, train_cnn_kg=True, train_cnn_kg_v2=True, train_cnn_kg_v3=True, epochs=100):
+    def run(self, train_mlp=True, train_kg_v1=True, train_kg_v2=True, train_cnn=True, train_cnn_kg=True, train_cnn_kg_v2=True, train_cnn_kg_v3=True, train_gnn=True, train_gnn_kg=True, epochs=100):
         """运行完整训练流程"""
         print("\n" + "=" * 60)
         print("开始训练流程")
         print("=" * 60)
-        print(f"训练选项: MLP={train_mlp}, KG-V1={train_kg_v1}, KG-V2={train_kg_v2}, CNN={train_cnn}, CNN_KG={train_cnn_kg}, CNN_KG_V2={train_cnn_kg_v2}, CNN_KG_V3={train_cnn_kg_v3}, epochs={epochs}")
+        print(f"训练选项: MLP={train_mlp}, KG-V1={train_kg_v1}, KG-V2={train_kg_v2}, CNN={train_cnn}, CNN_KG={train_cnn_kg}, CNN_KG_V2={train_cnn_kg_v2}, CNN_KG_V3={train_cnn_kg_v3}, GNN={train_gnn}, GNN_KG={train_gnn_kg}, epochs={epochs}")
 
         results = {
             'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -421,6 +486,14 @@ class Trainer:
         if train_cnn_kg_v3:
             cnn_kg_v3_model, cnn_kg_v3_val = self.train_cnn_kg_v3(epochs=epochs)
             results['models']['CNN_KG_V3'] = {'val_accuracy': float(cnn_kg_v3_val['accuracy'])}
+
+        if train_gnn:
+            gnn_model, gnn_val = self.train_gnn(epochs=epochs)
+            results['models']['GNN'] = {'val_accuracy': float(gnn_val['accuracy'])}
+
+        if train_gnn_kg:
+            gnn_kg_model, gnn_kg_val = self.train_gnn_kg(epochs=epochs)
+            results['models']['GNN_KG'] = {'val_accuracy': float(gnn_kg_val['accuracy'])}
 
         # 保存结果
         self.save_results(results)
@@ -879,6 +952,8 @@ def main():
     parser.add_argument('--cnn-kg', action='store_true', help='训练CNN-KG融合模型')
     parser.add_argument('--cnn-kg-v2', action='store_true', help='训练CNN-KG融合模型 V2 (门控融合)')
     parser.add_argument('--cnn-kg-v3', action='store_true', help='训练CNN-KG融合模型 V3 (残差连接)')
+    parser.add_argument('--gnn', action='store_true', help='训练GNN模型')
+    parser.add_argument('--gnn-kg', action='store_true', help='训练GNN-KG融合模型')
     parser.add_argument('--tune-v2', action='store_true', help='对V2模型进行贝叶斯优化调优')
     parser.add_argument('--tune-all', action='store_true', help='批量调优所有模型')
     parser.add_argument('--n-trials', type=int, default=20, help='调优试验次数 (默认20)')
@@ -924,22 +999,24 @@ def main():
 
     # 常规训练模式
     if args.all:
-        train_mlp = train_kg_v1 = train_kg_v2 = train_cnn = train_cnn_kg = train_cnn_kg_v2 = train_cnn_kg_v3 = True
+        train_mlp = train_kg_v1 = train_kg_v2 = train_cnn = train_cnn_kg = train_cnn_kg_v2 = train_cnn_kg_v3 = train_gnn = train_gnn_kg = True
     else:
-        train_mlp = args.mlp or (not (args.kg_v1 or args.kg_v2 or args.cnn or args.cnn_kg or args.cnn_kg_v2 or args.cnn_kg_v3))
+        train_mlp = args.mlp or (not (args.kg_v1 or args.kg_v2 or args.cnn or args.cnn_kg or args.cnn_kg_v2 or args.cnn_kg_v3 or args.gnn or args.gnn_kg))
         train_kg_v1 = args.kg_v1
         train_kg_v2 = args.kg_v2
         train_cnn = args.cnn
         train_cnn_kg = args.cnn_kg
         train_cnn_kg_v2 = args.cnn_kg_v2
         train_cnn_kg_v3 = args.cnn_kg_v3
+        train_gnn = args.gnn
+        train_gnn_kg = args.gnn_kg
 
-    if not (train_mlp or train_kg_v1 or train_kg_v2 or train_cnn or train_cnn_kg or train_cnn_kg_v2 or train_cnn_kg_v3):
-        print("请选择要训练的模型，使用 --mlp, --kg-v1, --kg-v2, --cnn, --cnn-kg, --cnn-kg-v2, --cnn-kg-v3, --tune-v2, --tune-all 或 --all")
+    if not (train_mlp or train_kg_v1 or train_kg_v2 or train_cnn or train_cnn_kg or train_cnn_kg_v2 or train_cnn_kg_v3 or train_gnn or train_gnn_kg):
+        print("请选择要训练的模型，使用 --mlp, --kg-v1, --kg-v2, --cnn, --cnn-kg, --cnn-kg-v2, --cnn-kg-v3, --gnn, --gnn-kg, --tune-v2, --tune-all 或 --all")
         return
 
     trainer = Trainer()
-    trainer.run(train_mlp=train_mlp, train_kg_v1=train_kg_v1, train_kg_v2=train_kg_v2, train_cnn=train_cnn, train_cnn_kg=train_cnn_kg, train_cnn_kg_v2=train_cnn_kg_v2, train_cnn_kg_v3=train_cnn_kg_v3, epochs=args.epochs)
+    trainer.run(train_mlp=train_mlp, train_kg_v1=train_kg_v1, train_kg_v2=train_kg_v2, train_cnn=train_cnn, train_cnn_kg=train_cnn_kg, train_cnn_kg_v2=train_cnn_kg_v2, train_cnn_kg_v3=train_cnn_kg_v3, train_gnn=train_gnn, train_gnn_kg=train_gnn_kg, epochs=args.epochs)
 
 
 if __name__ == '__main__':

@@ -1,77 +1,207 @@
 #!/usr/bin/env python3
 """
-基于图神经网络(GNN)的故障预测模型
+GNN模型：普通GNN和GNN+知识图谱融合
+架构：特征嵌入 + 消息传递层 + 交叉注意力 + 图卷积
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GATConv, SAGEConv, global_mean_pool, global_max_pool
-from torch_geometric.data import Data, Dataset
-import numpy as np
 import yaml
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
 
 
-class FaultGNN(nn.Module):
-    """故障预测GNN模型"""
+class FeatureEmbedding(nn.Module):
+    """特征嵌入层：线性投影 + BatchNorm"""
 
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers=3, dropout=0.3):
-        super(FaultGNN, self).__init__()
-
-        self.num_layers = num_layers
-        self.dropout = dropout
-
-        # 图卷积层
-        self.convs = nn.ModuleList()
-        self.bns = nn.ModuleList()
-
-        # 第一层
-        self.convs.append(GATConv(in_channels, hidden_channels, heads=4, concat=True))
-        self.bns.append(nn.BatchNorm1d(hidden_channels * 4))
-
-        # 中间层
-        for _ in range(num_layers - 2):
-            self.convs.append(GATConv(hidden_channels * 4, hidden_channels, heads=4, concat=True))
-            self.bns.append(nn.BatchNorm1d(hidden_channels * 4))
-
-        # 最后一层
-        self.convs.append(GATConv(hidden_channels * 4, hidden_channels, heads=4, concat=True))
-        self.bns.append(nn.BatchNorm1d(hidden_channels * 4))
-
-        # 分类头
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_channels * 4 * 2, hidden_channels * 2),  # 2 = mean + max pooling
+    def __init__(self, in_dim, hidden_dim, dropout=0.2):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_channels * 2, hidden_channels),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_channels, out_channels)
+            nn.Dropout(dropout)
         )
 
-    def forward(self, x, edge_index, batch):
-        """
-        前向传播
-        x: 节点特征 [num_nodes, in_channels]
-        edge_index: 边索引 [2, num_edges]
-        batch: 批次索引 [num_nodes]
-        """
-        # 图卷积层
-        for i, (conv, bn) in enumerate(zip(self.convs, self.bns)):
-            x = conv(x, edge_index)
-            x = bn(x)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
+    def forward(self, x):
+        return self.proj(x)
 
-        # 图级别池化
-        x_mean = global_mean_pool(x, batch)
-        x_max = global_max_pool(x, batch)
-        x = torch.cat([x_mean, x_max], dim=1)
 
-        # 分类
-        x = self.classifier(x)
+class ImprovedGCNLayer(nn.Module):
+    """改进的GCN层：带BatchNorm和ReLU"""
 
-        return F.log_softmax(x, dim=1)
+    def __init__(self, in_dim, out_dim, dropout=0.2):
+        super().__init__()
+        self.linear = nn.Linear(in_dim, out_dim)
+        self.bn = nn.BatchNorm1d(out_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, adj):
+        x = self.linear(x)
+        x = torch.matmul(adj, x)
+        x = self.bn(x)
+        x = F.relu(x)
+        return self.dropout(x)
+
+
+class GraphBlock(nn.Module):
+    """图卷积块：双层GCN + 残差连接"""
+
+    def __init__(self, hidden_dim, dropout=0.2):
+        super().__init__()
+        self.conv1 = ImprovedGCNLayer(hidden_dim, hidden_dim, dropout)
+        self.conv2 = ImprovedGCNLayer(hidden_dim, hidden_dim, dropout)
+
+    def forward(self, x, adj):
+        identity = x
+        x = self.conv1(x, adj)
+        x = self.conv2(x, adj)
+        return x + identity
+
+
+class GNN1D(nn.Module):
+    """GNN模型
+
+    架构：特征嵌入 → 多层图卷积块(带残差) → 分类器
+    """
+
+    def __init__(self, in_channels, num_classes, hidden_dim=256,
+                 num_layers=4, dropout=0.3):
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+
+        self.feature_embed = FeatureEmbedding(in_channels, hidden_dim, dropout)
+
+        self.conv_blocks = nn.ModuleList([
+            GraphBlock(hidden_dim, dropout) for _ in range(num_layers)
+        ])
+
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, num_classes)
+        )
+
+    def forward(self, x, adj=None):
+        if adj is None:
+            adj = torch.eye(x.size(0), device=x.device)
+
+        x = self.feature_embed(x)
+
+        for block in self.conv_blocks:
+            x = block(x, adj)
+
+        return self.classifier(x)
+
+
+class GNNKG1D(nn.Module):
+    """GNN + KG融合模型
+
+    架构：特征嵌入 → FiLM调制(KG) → 拼接 → 图卷积块 → 分类器
+    FiLM: 用KG生成gamma和beta来调制特征，实现知识感知的特征增强
+    """
+
+    def __init__(self, in_channels, kg_embedding_dim, num_classes,
+                 hidden_dim=256, num_layers=4, dropout=0.3):
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.kg_embedding_dim = kg_embedding_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+
+        self.feature_embed = FeatureEmbedding(in_channels, hidden_dim, dropout)
+
+        # KG嵌入
+        self.kg_embed = nn.Sequential(
+            nn.Linear(kg_embedding_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        # FiLM调制层：用KG生成gamma和beta
+        self.film_gamma = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+        self.film_beta = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+
+        # 融合后处理
+        self.fusion = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        self.conv_blocks = nn.ModuleList([
+            GraphBlock(hidden_dim, dropout) for _ in range(num_layers)
+        ])
+
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, num_classes)
+        )
+
+    def forward(self, x, kg_embedding, adj=None):
+        if adj is None:
+            adj = torch.eye(x.size(0), device=x.device)
+
+        x_feat = self.feature_embed(x)
+        x_kg = self.kg_embed(kg_embedding)
+
+        # FiLM调制：KG生成gamma和beta来调制特征
+        gamma = self.film_gamma(x_kg)
+        beta = self.film_beta(x_kg)
+        x_modulated = gamma * x_feat + beta
+
+        # 拼接融合
+        x_fused = torch.cat([x_modulated, x_kg], dim=1)
+        x_fused = self.fusion(x_fused)
+
+        for block in self.conv_blocks:
+            x_fused = block(x_fused, adj)
+
+        return self.classifier(x_fused)
+
+
+def build_batch_adjacency(X_batch, k=20):
+    """构建邻接矩阵：高斯核相似度 + 对称归一化拉普拉斯"""
+    batch_size = len(X_batch)
+    k = min(max(k, 1), batch_size - 1)
+
+    X_norm = X_batch / (np.linalg.norm(X_batch, axis=1, keepdims=True) + 1e-8)
+
+    nn_model = NearestNeighbors(n_neighbors=k + 1, algorithm='ball_tree', metric='euclidean')
+    nn_model.fit(X_norm)
+    distances, indices = nn_model.kneighbors(X_norm)
+
+    adj = np.zeros((batch_size, batch_size), dtype=np.float32)
+    for i in range(batch_size):
+        neighbor_indices = indices[i, 1:]
+        dists = distances[i, 1:]
+        weights = np.exp(-dists ** 2 / 2)
+        adj[i, neighbor_indices] = weights
+        adj[neighbor_indices, i] = weights
+
+    adj = adj + np.eye(batch_size, dtype=np.float32)
+
+    deg = np.sum(adj, axis=1, keepdims=True)
+    deg_inv_sqrt = 1.0 / np.sqrt(deg + 1e-8)
+    adj = adj * deg_inv_sqrt * deg_inv_sqrt.T
+
+    return torch.tensor(adj, dtype=torch.float)
 
 
 class GNNModel:
@@ -81,12 +211,13 @@ class GNNModel:
         with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
 
-        self.model_config = self.config['models']['gnn']
-        self.hidden_dim = self.model_config['hidden_dim']
-        self.num_layers = self.model_config['num_layers']
-        self.dropout = self.model_config['dropout']
-        self.learning_rate = self.model_config['learning_rate']
-        self.epochs = self.model_config['epochs']
+        model_cfg = self.config['models'].get('gnn', {})
+        self.hidden_dim = model_cfg.get('hidden_dim', 256)
+        self.num_layers = model_cfg.get('num_layers', 4)
+        self.dropout = model_cfg.get('dropout', 0.3)
+        self.learning_rate = model_cfg.get('learning_rate', 0.001)
+        self.epochs = model_cfg.get('epochs', 100)
+        self.batch_size = model_cfg.get('batch_size', 256)
 
         if torch.cuda.is_available():
             self.device = torch.device('cuda')
@@ -94,179 +225,299 @@ class GNNModel:
             self.device = torch.device('mps')
         else:
             self.device = torch.device('cpu')
+
         self.model = None
         self.optimizer = None
+        self.scheduler = None
+        self.fault_to_idx = {}
 
-    def build_model(self, in_channels, out_channels):
-        """构建模型"""
-        self.model = FaultGNN(
-            in_channels=in_channels,
-            hidden_channels=self.hidden_dim,
-            out_channels=out_channels,
+    def build_model(self, n_features, n_classes):
+        self.model = GNN1D(
+            in_channels=n_features,
+            num_classes=n_classes,
+            hidden_dim=self.hidden_dim,
             num_layers=self.num_layers,
             dropout=self.dropout
         ).to(self.device)
-
         self.optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=self.learning_rate,
             weight_decay=1e-4
         )
-
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=self.epochs, eta_min=1e-6
+        )
         return self.model
 
-    def train_epoch(self, train_loader):
-        """训练一个epoch"""
+    def train_epoch(self, X, y):
         self.model.train()
+
+        indices = np.arange(len(X))
+        np.random.shuffle(indices)
+
         total_loss = 0
-        correct = 0
-        total = 0
+        total_correct = 0
+        total_samples = 0
 
-        for data in train_loader:
-            data = data.to(self.device)
+        for start in range(0, len(X), self.batch_size):
+            end = min(start + self.batch_size, len(X))
+            batch_idx = indices[start:end]
+
+            X_batch = X[batch_idx]
+            y_batch = y[batch_idx]
+
+            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+
+            X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
+            y_tensor = torch.tensor(y_batch, dtype=torch.long).to(self.device)
+
             self.optimizer.zero_grad()
+            out = self.model(X_tensor, adj)
 
-            out = self.model(data.x, data.edge_index, data.batch)
-            loss = F.nll_loss(out, data.y)
-
+            loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
 
-            total_loss += loss.item() * data.num_graphs
+            total_loss += loss.item() * len(y_batch)
             pred = out.argmax(dim=1)
-            correct += (pred == data.y).sum().item()
-            total += len(data.y)
+            total_correct += (pred == y_tensor).sum().item()
+            total_samples += len(y_batch)
 
-        return total_loss / total, correct / total
+        self.scheduler.step()
+        return total_loss / total_samples, total_correct / total_samples
 
     @torch.no_grad()
-    def evaluate(self, loader):
-        """评估模型"""
+    def evaluate(self, X, y):
         self.model.eval()
+
         total_loss = 0
-        correct = 0
-        total = 0
+        total_correct = 0
+        total_samples = 0
         all_preds = []
-        all_labels = []
 
-        for data in loader:
-            data = data.to(self.device)
-            out = self.model(data.x, data.edge_index, data.batch)
-            loss = F.nll_loss(out, data.y)
+        for start in range(0, len(X), self.batch_size):
+            end = min(start + self.batch_size, len(X))
+            X_batch = X[start:end]
+            y_batch = y[start:end]
 
-            total_loss += loss.item() * data.num_graphs
+            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+
+            X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
+            y_tensor = torch.tensor(y_batch, dtype=torch.long).to(self.device)
+
+            out = self.model(X_tensor, adj)
+            loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
+
+            total_loss += loss.item() * len(y_batch)
             pred = out.argmax(dim=1)
-            correct += (pred == data.y).sum().item()
-            total += len(data.y)
-
+            total_correct += (pred == y_tensor).sum().item()
+            total_samples += len(y_batch)
             all_preds.extend(pred.cpu().numpy())
-            all_labels.extend(data.y.cpu().numpy())
 
-        return total_loss / total, correct / total, all_preds, all_labels
+        return {
+            'loss': total_loss / total_samples,
+            'accuracy': total_correct / total_samples
+        }, np.array(all_preds)
+
+    def predict(self, X):
+        self.model.eval()
+        all_preds = []
+
+        for start in range(0, len(X), self.batch_size):
+            X_batch = X[start:start + self.batch_size]
+            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+            X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
+            out = self.model(X_tensor, adj)
+            all_preds.extend(out.argmax(dim=1).cpu().numpy())
+
+        return np.array(all_preds)
 
     def save_model(self, path):
-        """保存模型"""
         torch.save({
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'config': self.model_config
+            'fault_to_idx': self.fault_to_idx,
+            'config': {
+                'hidden_dim': self.hidden_dim,
+                'num_layers': self.num_layers,
+                'dropout': self.dropout,
+                'learning_rate': self.learning_rate,
+                'batch_size': self.batch_size
+            }
         }, path)
         print(f"[INFO] 模型已保存至: {path}")
 
     def load_model(self, path):
-        """加载模型"""
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.fault_to_idx = checkpoint['fault_to_idx']
+        self.batch_size = checkpoint.get('config', {}).get('batch_size', 256)
         print(f"[INFO] 模型已从: {path} 加载")
 
 
-class FaultGraphDataset(Dataset):
-    """故障图数据集"""
+class GNNKGModel:
+    """GNN + KG融合模型包装类"""
 
-    def __init__(self, features_list, labels, fault_to_idx, adj_matrix=None, idx_to_fault=None):
-        """
-        features_list: 特征列表
-        labels: 标签列表
-        fault_to_idx: 故障类型到索引的映射
-        adj_matrix: 邻接矩阵（可选）
-        idx_to_fault: 索引到故障类型的映射（用于将整数标签转换为字符串）
-        """
-        self.features_list = features_list
-        # 如果labels是整数，需要先转换为故障类型名称再转换为索引
-        if idx_to_fault is not None:
-            self.labels = [fault_to_idx[idx_to_fault[l]] for l in labels]
+    def __init__(self, config_path='config.yaml'):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            self.config = yaml.safe_load(f)
+
+        model_cfg = self.config['models'].get('gnn', {})
+        self.hidden_dim = model_cfg.get('hidden_dim', 256)
+        self.num_layers = model_cfg.get('num_layers', 4)
+        self.dropout = model_cfg.get('dropout', 0.3)
+        self.learning_rate = model_cfg.get('learning_rate', 0.001)
+        self.epochs = model_cfg.get('epochs', 100)
+        self.batch_size = model_cfg.get('batch_size', 256)
+
+        kg_cfg = self.config['models'].get('gnn', {})
+        self.kg_embedding_dim = kg_cfg.get('kg_embedding_dim', 33)
+
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
         else:
-            self.labels = [fault_to_idx[l] if isinstance(l, str) else l for l in labels]
-        self.fault_to_idx = fault_to_idx
-        self.idx_to_fault = idx_to_fault
-        self.adj_matrix = adj_matrix
+            self.device = torch.device('cpu')
 
-    def __len__(self):
-        return len(self.features_list)
+        self.model = None
+        self.optimizer = None
+        self.scheduler = None
+        self.fault_to_idx = {}
 
-    def __getitem__(self, idx):
-        features = self.features_list[idx]
-        label = self.labels[idx]
-
-        # 构建图数据
-        if self.adj_matrix is not None:
-            # 使用知识图谱的邻接矩阵
-            edge_index = self._build_edge_index_from_adj()
-        else:
-            # 构建简单KNN图
-            edge_index = self._build_knn_graph(features)
-
-        # 创建节点特征（复制n_nodes次以模拟图结构）
-        n_nodes = max(edge_index.max().item() + 1, len(features))
-        x = torch.tensor(features, dtype=torch.float).unsqueeze(0).repeat(n_nodes, 1)
-
-        data = Data(
-            x=x,
-            edge_index=edge_index,
-            y=torch.tensor([label], dtype=torch.long)
+    def build_model(self, n_features, n_classes):
+        self.model = GNNKG1D(
+            in_channels=n_features,
+            kg_embedding_dim=self.kg_embedding_dim,
+            num_classes=n_classes,
+            hidden_dim=self.hidden_dim,
+            num_layers=self.num_layers,
+            dropout=self.dropout
+        ).to(self.device)
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=1e-4
         )
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=self.epochs, eta_min=1e-6
+        )
+        return self.model
 
-        return data
+    def train_epoch(self, X, y, kg_embeddings):
+        self.model.train()
 
-    def _build_edge_index_from_adj(self):
-        """从邻接矩阵构建边索引"""
-        adj = self.adj_matrix
-        edges = []
+        indices = np.arange(len(X))
+        np.random.shuffle(indices)
 
-        for i in range(len(adj)):
-            for j in range(i + 1, len(adj)):
-                if adj[i][j] > 0:
-                    edges.append([i, j])
-                    edges.append([j, i])
+        total_loss = 0
+        total_correct = 0
+        total_samples = 0
 
-        if not edges:
-            # 如果没有边，创建自环
-            edges = [[0, 0]]
+        for start in range(0, len(X), self.batch_size):
+            end = min(start + self.batch_size, len(X))
+            batch_idx = indices[start:end]
 
-        return torch.tensor(edges, dtype=torch.long).t().contiguous()
+            X_batch = X[batch_idx]
+            y_batch = y[batch_idx]
+            kg_batch = kg_embeddings[batch_idx]
 
-    def _build_knn_graph(self, features, k=5):
-        """构建KNN图"""
-        n = len(features)
-        if n <= 1:
-            return torch.tensor([[0, 0]], dtype=torch.long).t().contiguous()
+            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
 
-        # 简化：只创建顺序边
-        edges = []
-        for i in range(n - 1):
-            edges.append([i, i + 1])
-            edges.append([i + 1, i])
+            X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
+            kg_tensor = torch.tensor(kg_batch, dtype=torch.float).to(self.device)
+            y_tensor = torch.tensor(y_batch, dtype=torch.long).to(self.device)
 
-        return torch.tensor(edges, dtype=torch.long).t().contiguous()
+            self.optimizer.zero_grad()
+            out = self.model(X_tensor, kg_tensor, adj)
 
+            loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            self.optimizer.step()
 
-def create_graph_data_from_samples(features, labels, fault_to_idx, kg_adj_matrix=None):
-    """从样本创建图数据"""
-    dataset = FaultGraphDataset(features, labels, fault_to_idx, kg_adj_matrix)
+            total_loss += loss.item() * len(y_batch)
+            pred = out.argmax(dim=1)
+            total_correct += (pred == y_tensor).sum().item()
+            total_samples += len(y_batch)
 
-    graph_list = []
-    for i in range(len(dataset)):
-        graph_list.append(dataset[i])
+        self.scheduler.step()
+        return total_loss / total_samples, total_correct / total_samples
 
-    return graph_list
+    @torch.no_grad()
+    def evaluate(self, X, y, kg_embeddings):
+        self.model.eval()
+
+        total_loss = 0
+        total_correct = 0
+        total_samples = 0
+        all_preds = []
+
+        for start in range(0, len(X), self.batch_size):
+            end = min(start + self.batch_size, len(X))
+            X_batch = X[start:end]
+            y_batch = y[start:end]
+            kg_batch = kg_embeddings[start:end]
+
+            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+
+            X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
+            kg_tensor = torch.tensor(kg_batch, dtype=torch.float).to(self.device)
+            y_tensor = torch.tensor(y_batch, dtype=torch.long).to(self.device)
+
+            out = self.model(X_tensor, kg_tensor, adj)
+            loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
+
+            total_loss += loss.item() * len(y_batch)
+            pred = out.argmax(dim=1)
+            total_correct += (pred == y_tensor).sum().item()
+            total_samples += len(y_batch)
+            all_preds.extend(pred.cpu().numpy())
+
+        return {
+            'loss': total_loss / total_samples,
+            'accuracy': total_correct / total_samples
+        }, np.array(all_preds)
+
+    def predict(self, X, kg_embeddings):
+        self.model.eval()
+        all_preds = []
+
+        for start in range(0, len(X), self.batch_size):
+            X_batch = X[start:start + self.batch_size]
+            kg_batch = kg_embeddings[start:start + self.batch_size]
+            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+
+            X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
+            kg_tensor = torch.tensor(kg_batch, dtype=torch.float).to(self.device)
+
+            out = self.model(X_tensor, kg_tensor, adj)
+            all_preds.extend(out.argmax(dim=1).cpu().numpy())
+
+        return np.array(all_preds)
+
+    def save_model(self, path):
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'fault_to_idx': self.fault_to_idx,
+            'config': {
+                'hidden_dim': self.hidden_dim,
+                'num_layers': self.num_layers,
+                'kg_embedding_dim': self.kg_embedding_dim,
+                'dropout': self.dropout,
+                'learning_rate': self.learning_rate,
+                'batch_size': self.batch_size
+            }
+        }, path)
+        print(f"[INFO] 模型已保存至: {path}")
+
+    def load_model(self, path):
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.fault_to_idx = checkpoint['fault_to_idx']
+        self.batch_size = checkpoint.get('config', {}).get('batch_size', 256)
+        print(f"[INFO] 模型已从: {path} 加载")

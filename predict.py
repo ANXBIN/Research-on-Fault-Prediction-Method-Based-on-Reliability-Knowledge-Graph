@@ -25,6 +25,7 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 # 导入模型
 from src.models.mlp_model import KGEnhancedMLPV2Model, load_kg_embeddings_v4
 from src.models.cnn_model import CNNKGModelV2
+from src.models.gnn_model import GNNModel, GNNKGModel
 
 
 class OllamaClient:
@@ -109,7 +110,9 @@ class Predictor:
         """加载模型"""
         model_path_map = {
             'KG-MLP V2': 'kg_enhanced_mlp_v2_model.pt',
-            'CNN-KG V2': 'cnn_kg_v2_model.pt'
+            'CNN-KG V2': 'cnn_kg_v2_model.pt',
+            'GNN': 'gnn_model.pt',
+            'GNN-KG': 'gnn_kg_model.pt'
         }
 
         path = Path('models') / model_path_map.get(self.model_name, 'kg_enhanced_mlp_v2_model.pt')
@@ -127,10 +130,23 @@ class Predictor:
             self.model = KGEnhancedMLPV2Model(config_path='config.yaml')
             self.model.hidden_dim = saved_config.get('hidden_dim', 192)
             self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
-        else:  # CNN-KG V2
+        elif self.model_name == 'CNN-KG V2':
             self.model = CNNKGModelV2(config_path='config.yaml')
             self.model.hidden_dim = saved_config.get('hidden_dim', 64)
             self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
+        elif self.model_name == 'GNN':
+            self.model = GNNModel(config_path='config.yaml')
+            self.model.hidden_dim = saved_config.get('hidden_dim', 256)
+            self.model.num_layers = saved_config.get('num_layers', 4)
+            self.model.dropout = saved_config.get('dropout', 0.3)
+            self.model.batch_size = saved_config.get('batch_size', 256)
+        elif self.model_name == 'GNN-KG':
+            self.model = GNNKGModel(config_path='config.yaml')
+            self.model.hidden_dim = saved_config.get('hidden_dim', 256)
+            self.model.num_layers = saved_config.get('num_layers', 4)
+            self.model.dropout = saved_config.get('dropout', 0.3)
+            self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
+            self.model.batch_size = saved_config.get('batch_size', 256)
 
         self.model.dropout = saved_config.get('dropout', 0.2)
         self.model.fault_to_idx = self.fault_to_idx
@@ -157,16 +173,29 @@ class Predictor:
         X = np.array(features).reshape(1, -1)
         X_scaled = self.scaler.transform(X)
 
-        # 获取KG嵌入 - 使用预测的故障类型
-        # 这里简化处理，使用所有可能的故障类型的平均嵌入
+        # KG嵌入 - 简化处理，使用零向量
         kg_emb = np.zeros(33)
 
         # 预测
         self.model.model.eval()
         with torch.no_grad():
             X_tensor = torch.tensor(X_scaled, dtype=torch.float).to(self.model.device)
-            kg_tensor = torch.tensor(kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
-            output = self.model.model(X_tensor, kg_tensor)
+
+            # 根据模型类型选择前向方式
+            if isinstance(self.model, (GNNModel, GNNKGModel)):
+                # GNN模型需要邻接矩阵
+                from src.models.gnn_model import build_batch_adjacency
+                adj = build_batch_adjacency(X_scaled, k=10).to(self.model.device)
+                if isinstance(self.model, GNNKGModel):
+                    kg_tensor = torch.tensor(kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
+                    output = self.model.model(X_tensor, kg_tensor, adj)
+                else:
+                    output = self.model.model(X_tensor, adj)
+            else:
+                # MLP/CNN模型
+                kg_tensor = torch.tensor(kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
+                output = self.model.model(X_tensor, kg_tensor)
+
             pred_idx = output.argmax(dim=1).item()
 
         fault_name = self.label_encoder.inverse_transform([pred_idx])[0]
@@ -213,7 +242,7 @@ def main():
     parser.add_argument('--sample', action='store_true', help='使用随机示例数据')
     parser.add_argument('--data', type=str, help='传感器数据，用逗号分隔')
     parser.add_argument('--model', type=str, default='KG-MLP V2',
-                        choices=['KG-MLP V2', 'CNN-KG V2'], help='选择模型')
+                        choices=['KG-MLP V2', 'CNN-KG V2', 'GNN', 'GNN-KG'], help='选择模型')
     parser.add_argument('--no-llm', action='store_true', help='禁用LLM解释')
     parser.add_argument('--idx', type=int, help='指定样本索引')
 
