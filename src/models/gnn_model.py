@@ -61,13 +61,13 @@ class GraphBlock(nn.Module):
 
 
 class GNN1D(nn.Module):
-    """GNN模型
+    """GNN模型 - 简化版
 
-    架构：特征嵌入 → 多层图卷积块(带残差) → 分类器
+    架构：特征嵌入 → 双路图卷积 → 分类器
     """
 
     def __init__(self, in_channels, num_classes, hidden_dim=256,
-                 num_layers=4, dropout=0.3):
+                 num_layers=3, dropout=0.3):
         super().__init__()
 
         self.in_channels = in_channels
@@ -76,9 +76,8 @@ class GNN1D(nn.Module):
 
         self.feature_embed = FeatureEmbedding(in_channels, hidden_dim, dropout)
 
-        self.conv_blocks = nn.ModuleList([
-            GraphBlock(hidden_dim, dropout) for _ in range(num_layers)
-        ])
+        self.conv1 = ImprovedGCNLayer(hidden_dim, hidden_dim, dropout)
+        self.conv2 = ImprovedGCNLayer(hidden_dim, hidden_dim, dropout)
 
         self.classifier = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
@@ -92,22 +91,21 @@ class GNN1D(nn.Module):
             adj = torch.eye(x.size(0), device=x.device)
 
         x = self.feature_embed(x)
-
-        for block in self.conv_blocks:
-            x = block(x, adj)
-
-        return self.classifier(x)
+        h = self.conv1(x, adj)
+        h = self.conv2(h, adj)
+        h = h + x
+        return self.classifier(h)
 
 
 class GNNKG1D(nn.Module):
-    """GNN + KG融合模型
+    """GNN + KG融合模型 - 简化版
 
-    架构：特征嵌入 → FiLM调制(KG) → 拼接 → 图卷积块 → 分类器
-    FiLM: 用KG生成gamma和beta来调制特征，实现知识感知的特征增强
+    架构：特征+KG concat → 单层强图卷积 → 分类
+    简化设计减少过拟合风险
     """
 
     def __init__(self, in_channels, kg_embedding_dim, num_classes,
-                 hidden_dim=256, num_layers=4, dropout=0.3):
+                 hidden_dim=256, num_layers=3, dropout=0.3):
         super().__init__()
 
         self.in_channels = in_channels
@@ -115,38 +113,19 @@ class GNNKG1D(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
 
-        self.feature_embed = FeatureEmbedding(in_channels, hidden_dim, dropout)
-
-        # KG嵌入
-        self.kg_embed = nn.Sequential(
-            nn.Linear(kg_embedding_dim, hidden_dim),
+        # 特征和KG拼接后统一投影
+        self.fusion_embed = nn.Sequential(
+            nn.Linear(in_channels + kg_embedding_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
 
-        # FiLM调制层：用KG生成gamma和beta
-        self.film_gamma = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
-        self.film_beta = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
+        # 单层强图卷积（双路）
+        self.conv1 = ImprovedGCNLayer(hidden_dim, hidden_dim, dropout)
+        self.conv2 = ImprovedGCNLayer(hidden_dim, hidden_dim, dropout)
 
-        # 融合后处理
-        self.fusion = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout)
-        )
-
-        self.conv_blocks = nn.ModuleList([
-            GraphBlock(hidden_dim, dropout) for _ in range(num_layers)
-        ])
-
+        # 分类器
         self.classifier = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
@@ -158,25 +137,19 @@ class GNNKG1D(nn.Module):
         if adj is None:
             adj = torch.eye(x.size(0), device=x.device)
 
-        x_feat = self.feature_embed(x)
-        x_kg = self.kg_embed(kg_embedding)
+        # 特征和KG拼接
+        x_fused = torch.cat([x, kg_embedding], dim=1)
+        x_fused = self.fusion_embed(x_fused)
 
-        # FiLM调制：KG生成gamma和beta来调制特征
-        gamma = self.film_gamma(x_kg)
-        beta = self.film_beta(x_kg)
-        x_modulated = gamma * x_feat + beta
+        # 双路图卷积 + 残差
+        h = self.conv1(x_fused, adj)
+        h = self.conv2(h, adj)
+        h = h + x_fused  # 残差
 
-        # 拼接融合
-        x_fused = torch.cat([x_modulated, x_kg], dim=1)
-        x_fused = self.fusion(x_fused)
-
-        for block in self.conv_blocks:
-            x_fused = block(x_fused, adj)
-
-        return self.classifier(x_fused)
+        return self.classifier(h)
 
 
-def build_batch_adjacency(X_batch, k=20):
+def build_batch_adjacency(X_batch, k=30):
     """构建邻接矩阵：高斯核相似度 + 对称归一化拉普拉斯"""
     batch_size = len(X_batch)
     k = min(max(k, 1), batch_size - 1)
@@ -266,7 +239,7 @@ class GNNModel:
             X_batch = X[batch_idx]
             y_batch = y[batch_idx]
 
-            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+            adj = build_batch_adjacency(X_batch, k=30).to(self.device)
 
             X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
             y_tensor = torch.tensor(y_batch, dtype=torch.long).to(self.device)
@@ -301,7 +274,7 @@ class GNNModel:
             X_batch = X[start:end]
             y_batch = y[start:end]
 
-            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+            adj = build_batch_adjacency(X_batch, k=30).to(self.device)
 
             X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
             y_tensor = torch.tensor(y_batch, dtype=torch.long).to(self.device)
@@ -326,7 +299,7 @@ class GNNModel:
 
         for start in range(0, len(X), self.batch_size):
             X_batch = X[start:start + self.batch_size]
-            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+            adj = build_batch_adjacency(X_batch, k=30).to(self.device)
             X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
             out = self.model(X_tensor, adj)
             all_preds.extend(out.argmax(dim=1).cpu().numpy())
@@ -424,7 +397,7 @@ class GNNKGModel:
             y_batch = y[batch_idx]
             kg_batch = kg_embeddings[batch_idx]
 
-            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+            adj = build_batch_adjacency(X_batch, k=30).to(self.device)
 
             X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
             kg_tensor = torch.tensor(kg_batch, dtype=torch.float).to(self.device)
@@ -461,7 +434,7 @@ class GNNKGModel:
             y_batch = y[start:end]
             kg_batch = kg_embeddings[start:end]
 
-            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+            adj = build_batch_adjacency(X_batch, k=30).to(self.device)
 
             X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
             kg_tensor = torch.tensor(kg_batch, dtype=torch.float).to(self.device)
@@ -488,7 +461,7 @@ class GNNKGModel:
         for start in range(0, len(X), self.batch_size):
             X_batch = X[start:start + self.batch_size]
             kg_batch = kg_embeddings[start:start + self.batch_size]
-            adj = build_batch_adjacency(X_batch, k=20).to(self.device)
+            adj = build_batch_adjacency(X_batch, k=30).to(self.device)
 
             X_tensor = torch.tensor(X_batch, dtype=torch.float).to(self.device)
             kg_tensor = torch.tensor(kg_batch, dtype=torch.float).to(self.device)
