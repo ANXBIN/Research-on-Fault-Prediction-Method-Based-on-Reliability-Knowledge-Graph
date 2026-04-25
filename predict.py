@@ -6,7 +6,7 @@
 用法:
   python predict.py --sample                    # 使用随机示例数据
   python predict.py --data "0.5,-1.2,..."      # 输入传感器数据
-  python predict.py --model KG-MLP-V2          # 指定模型
+  python predict.py --model MLP-KG-V2          # 指定模型
 """
 
 import sys
@@ -67,7 +67,7 @@ class OllamaClient:
 class Predictor:
     """故障预测器"""
 
-    def __init__(self, model_name='KG-MLP V2'):
+    def __init__(self, model_name='MLP-KG-V2'):
         self.device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
         self.ollama = OllamaClient()
         self.model_name = model_name
@@ -99,6 +99,7 @@ class Predictor:
         self.scaler = StandardScaler()
         X = df[feature_cols].values
         self.scaler.fit(X)
+        self.X_train_raw = X  # 保存原始训练数据用于KNN
         self.n_features = len(feature_cols)
         self.feature_names = feature_cols
 
@@ -109,13 +110,13 @@ class Predictor:
     def load_model(self):
         """加载模型"""
         model_path_map = {
-            'KG-MLP V2': 'kg_enhanced_mlp_v2_model.pt',
+            'MLP-KG-V2': 'mlp_kg_v2_model.pt',
             'CNN-KG V2': 'cnn_kg_v2_model.pt',
             'GNN': 'gnn_model.pt',
             'GNN-KG': 'gnn_kg_model.pt'
         }
 
-        path = Path('models') / model_path_map.get(self.model_name, 'kg_enhanced_mlp_v2_model.pt')
+        path = Path('models') / model_path_map.get(self.model_name, 'mlp_kg_v2_model.pt')
 
         if not path.exists():
             print(f"[错误] 模型文件不存在: {path}")
@@ -126,7 +127,7 @@ class Predictor:
         checkpoint = torch.load(path, map_location=self.device)
         saved_config = checkpoint.get('config', {})
 
-        if self.model_name == 'KG-MLP V2':
+        if self.model_name == 'MLP-KG-V2':
             self.model = KGEnhancedMLPV2Model(config_path='config.yaml')
             self.model.hidden_dim = saved_config.get('hidden_dim', 192)
             self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
@@ -167,39 +168,135 @@ class Predictor:
             print(f"  [警告] KG嵌入加载失败: {e}")
             return np.zeros(33)
 
+    def compute_knn_embedding(self, X_sample, X_train, k=20):
+        """为单个样本计算KNN嵌入"""
+        from sklearn.neighbors import NearestNeighbors
+
+        n_features = X_train.shape[1]
+        X_sample = X_sample.reshape(1, -1)
+
+        # 归一化
+        X_train_norm = X_train / (np.linalg.norm(X_train, axis=1, keepdims=True) + 1e-8)
+        X_sample_norm = X_sample / (np.linalg.norm(X_sample, axis=1, keepdims=True) + 1e-8)
+
+        # KNN
+        nn_model = NearestNeighbors(n_neighbors=min(k+1, len(X_train)), metric='euclidean')
+        nn_model.fit(X_train_norm)
+        distances, indices = nn_model.kneighbors(X_sample_norm)
+
+        # 邻居特征
+        neighbor_indices = indices[0, 1:]  # 排除自己
+        neighbor_features = X_train_norm[neighbor_indices]
+        neighbor_distances = distances[0, 1:]
+
+        # 距离倒数加权
+        weights = 1.0 / np.maximum(neighbor_distances, 1e-8)
+        weights = weights / weights.sum()
+
+        # 邻居特征加权和
+        neighbor_weighted = np.dot(weights, neighbor_features)
+
+        # 差异
+        diff = X_sample_norm[0] - neighbor_weighted
+
+        # 构建64维嵌入
+        emb = np.zeros(64, dtype=np.float32)
+        emb[:n_features] = X_sample_norm[0]
+        emb[n_features:2*n_features] = neighbor_weighted
+        emb[2*n_features:3*n_features] = diff
+
+        return emb
+
     def predict(self, features):
         """预测故障"""
         # 预处理
         X = np.array(features).reshape(1, -1)
         X_scaled = self.scaler.transform(X)
 
-        # KG嵌入 - 简化处理，使用零向量
-        kg_emb = np.zeros(33)
+        # 获取KG嵌入（根据故障类型）
+        def get_kg_embedding(fault_type):
+            try:
+                from src.models.mlp_model import load_kg_embeddings_v4
+                kg_emb = load_kg_embeddings_v4(
+                    'data/processed/fault_embeddings.json',
+                    [fault_type],
+                    'data/processed/kg_embeddings.json'
+                )
+                return kg_emb[0]
+            except:
+                return np.zeros(33)
 
-        # 预测
+        # 获取MLP用的KNN嵌入
+        def get_knn_embedding(X_sample, X_train, k=20):
+            from sklearn.neighbors import NearestNeighbors
+            n_features = X_train.shape[1]
+            X_sample = X_sample.reshape(1, -1)
+            X_train_norm = X_train / (np.linalg.norm(X_train, axis=1, keepdims=True) + 1e-8)
+            X_sample_norm = X_sample / (np.linalg.norm(X_sample, axis=1, keepdims=True) + 1e-8)
+            nn_model = NearestNeighbors(n_neighbors=min(k+1, len(X_train)), metric='euclidean')
+            nn_model.fit(X_train_norm)
+            distances, indices = nn_model.kneighbors(X_sample_norm)
+            neighbor_indices = indices[0, 1:]
+            neighbor_features = X_train_norm[neighbor_indices]
+            neighbor_distances = distances[0, 1:]
+            weights = 1.0 / np.maximum(neighbor_distances, 1e-8)
+            weights = weights / weights.sum()
+            neighbor_weighted = np.dot(weights, neighbor_features)
+            diff = X_sample_norm[0] - neighbor_weighted
+            emb = np.zeros(64, dtype=np.float32)
+            emb[:n_features] = X_sample_norm[0]
+            emb[n_features:2*n_features] = neighbor_weighted
+            emb[2*n_features:3*n_features] = diff
+            return emb
+
+        # 两阶段预测：第一阶段用平均嵌入得到初步预测
+        avg_kg_emb = np.zeros(33)
+        try:
+            from src.models.mlp_model import load_kg_embeddings_v4
+            all_kg_embs = load_kg_embeddings_v4(
+                'data/processed/fault_embeddings.json',
+                list(self.label_encoder.classes_),
+                'data/processed/kg_embeddings.json'
+            )
+            avg_kg_emb = np.mean(all_kg_embs, axis=0)
+        except:
+            pass
+
         self.model.model.eval()
         with torch.no_grad():
             X_tensor = torch.tensor(X_scaled, dtype=torch.float).to(self.model.device)
 
-            # 根据模型类型选择前向方式
             if isinstance(self.model, (GNNModel, GNNKGModel)):
-                # GNN模型需要邻接矩阵
                 from src.models.gnn_model import build_batch_adjacency
-                adj = build_batch_adjacency(X_scaled, k=10).to(self.model.device)
+                adj = build_batch_adjacency(X_scaled, k=30).to(self.model.device)
+
                 if isinstance(self.model, GNNKGModel):
-                    kg_tensor = torch.tensor(kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
+                    # 第一阶段：用平均嵌入
+                    kg_tensor = torch.tensor(avg_kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
                     output = self.model.model(X_tensor, kg_tensor, adj)
                 else:
                     output = self.model.model(X_tensor, adj)
+            elif isinstance(self.model, (KGEnhancedMLPModel, KGEnhancedMLPV2Model)):
+                # MLP模型：使用KNN嵌入
+                knn_emb = get_knn_embedding(X_scaled, self.X_train_raw, k=20)
+                kg_tensor = torch.tensor(knn_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
+                output = self.model.model(X_tensor, kg_tensor)
             else:
-                # MLP/CNN模型
-                kg_tensor = torch.tensor(kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
+                kg_tensor = torch.tensor(avg_kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
                 output = self.model.model(X_tensor, kg_tensor)
 
             pred_idx = output.argmax(dim=1).item()
+            fault_name = self.label_encoder.inverse_transform([pred_idx])[0]
 
-        fault_name = self.label_encoder.inverse_transform([pred_idx])[0]
-        probabilities = torch.softmax(output, dim=1).cpu().numpy()[0]
+            # 第二阶段：用预测结果的KG嵌入重新预测（仅KG模型）
+            if isinstance(self.model, GNNKGModel):
+                specific_kg_emb = get_kg_embedding(fault_name)
+                kg_tensor = torch.tensor(specific_kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
+                output = self.model.model(X_tensor, kg_tensor, adj)
+                pred_idx = output.argmax(dim=1).item()
+                fault_name = self.label_encoder.inverse_transform([pred_idx])[0]
+
+            probabilities = torch.softmax(output, dim=1).cpu().numpy()[0]
 
         return fault_name, probabilities
 
@@ -217,11 +314,11 @@ class Predictor:
         if not self.ollama.is_available():
             return "Ollama未运行，无法获取解释"
 
-        prompt = f"""基于以下故障预测结果，给出简洁的解释和建议：
+        prompt = f"""你是一个变速箱故障诊断专家，基于以下齿轮箱故障预测模型的预测结果，给出简洁的解释和建议。
 
 预测故障类型: {fault_name}
 
-故障类型概率分布:
+Top-3预测及概率:
 """
         for name, prob in top3:
             prompt += f"- {name}: {prob:.1%}\n"
@@ -241,8 +338,8 @@ def main():
     parser = argparse.ArgumentParser(description='变速箱故障预测')
     parser.add_argument('--sample', action='store_true', help='使用随机示例数据')
     parser.add_argument('--data', type=str, help='传感器数据，用逗号分隔')
-    parser.add_argument('--model', type=str, default='KG-MLP V2',
-                        choices=['KG-MLP V2', 'CNN-KG V2', 'GNN', 'GNN-KG'], help='选择模型')
+    parser.add_argument('--model', type=str, default='MLP-KG-V2',
+                        choices=['MLP-KG-V2', 'CNN-KG V2', 'GNN', 'GNN-KG'], help='选择模型')
     parser.add_argument('--no-llm', action='store_true', help='禁用LLM解释')
     parser.add_argument('--idx', type=int, help='指定样本索引')
 

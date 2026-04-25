@@ -45,12 +45,15 @@ class KGEnhancedMLP(nn.Module):
                  out_channels, dropout=0.3):
         super(KGEnhancedMLP, self).__init__()
 
-        # 原始特征投影
+        # 原始特征投影 - 与PlainMLP相同结构
         self.feature_net = nn.Sequential(
             nn.Linear(in_channels, hidden_channels),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_channels, hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, hidden_channels // 2),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
@@ -62,34 +65,35 @@ class KGEnhancedMLP(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_channels, hidden_channels),
             nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.ReLU(),
             nn.Dropout(dropout)
         )
 
-        # 加性融合 + 层归一化
+        # 融合层
+        fusion_in_dim = hidden_channels // 2
         self.fusion = nn.Sequential(
-            nn.Linear(hidden_channels * 3, hidden_channels),
-            nn.LayerNorm(hidden_channels),
+            nn.Linear(fusion_in_dim * 2, fusion_in_dim),
+            nn.LayerNorm(fusion_in_dim),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
 
         # 分类头
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.Linear(fusion_in_dim, hidden_channels // 4),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_channels // 2, out_channels)
+            nn.Linear(hidden_channels // 4, out_channels)
         )
 
     def forward(self, x, kg_embedding):
         x_feat = self.feature_net(x)
         x_kg = self.kg_net(kg_embedding)
 
-        # 加性融合
-        x_fused = x_feat + x_kg
-
-        # 拼接用于进一步变换
-        combined = torch.cat([x_fused, x_feat, x_kg], dim=1)
+        # 拼接融合
+        combined = torch.cat([x_feat, x_kg], dim=1)
         x_fused = self.fusion(combined)
 
         return self.classifier(x_fused)
@@ -303,48 +307,109 @@ KGEnhancedMLPV2Model = KGEnhancedMLPModel
 
 def build_knn_graph_features(X, k=10):
     """
-    基于特征的K近邻图构建样本嵌入
-
-    每个样本的嵌入 = [归一化原始特征(n_features), 邻居特征加权和(n_features)]
-    填充到64维
+    基于特征的K近邻图构建样本嵌入（已弃用，保留用于参考）
     """
     n_samples = len(X)
     n_features = X.shape[1]
-    k = min(k, max(1, n_samples - 1))  # 确保k至少为1
+    k = min(k, max(1, n_samples - 1))
 
-    # 归一化特征
     X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
     row_norms = np.linalg.norm(X_norm, axis=1)
     zero_rows = row_norms < 1e-8
     if np.any(zero_rows):
         X_norm[zero_rows] = 1e-8
 
-    # KNN找最近邻
     nn_model = NearestNeighbors(n_neighbors=k + 1, metric='euclidean')
     nn_model.fit(X_norm)
     distances, indices = nn_model.kneighbors(X_norm)
 
-    # 构建64维嵌入: 前20维=归一化特征，中间20维=邻居加权，后24维=0填充
     kg_embeddings = np.zeros((n_samples, 64), dtype=np.float32)
 
     for i in range(n_samples):
-        neighbor_indices = indices[i, 1:]  # 排除自己
-        neighbor_features = X_norm[neighbor_indices]  # shape: (k, n_features)
+        neighbor_indices = indices[i, 1:]
+        neighbor_features = X_norm[neighbor_indices]
 
-        # 距离倒数加权
         dists = np.maximum(distances[i, 1:], 1e-8)
         weights = 1.0 / dists
         weights = weights / weights.sum()
 
-        # 加权平均 -> shape (n_features,)
-        neighbor_weighted = np.dot(weights, neighbor_features)  # (n_features,)
+        neighbor_weighted = np.dot(weights, neighbor_features)
 
-        # 前20维: 归一化原始特征
         kg_embeddings[i, :n_features] = X_norm[i]
-        # 中间20维: 邻居特征加权和
         kg_embeddings[i, n_features:2*n_features] = neighbor_weighted
 
     return kg_embeddings
+
+
+def load_kg_embeddings_mlp(X_train, X_val, X_test, k=20):
+    """
+    为MLP模型构建基于KNN的样本级嵌入
+
+    每个样本的嵌入 = [归一化原始特征, 邻居特征加权和, 故障上下文]
+
+    Args:
+        X_train: 训练集特征
+        X_val: 验证集特征
+        X_test: 测试集特征
+        k: 近邻数
+
+    Returns:
+        kg_train_emb, kg_val_emb, kg_test_emb: KNN嵌入
+    """
+    # 合并所有数据用KNN
+    X_all = np.vstack([X_train, X_val, X_test])
+    n_train = len(X_train)
+    n_val = len(X_val)
+    n_test = len(X_test)
+
+    n_samples = len(X_all)
+    n_features = X_all.shape[1]
+
+    # 归一化
+    X_norm = X_all / (np.linalg.norm(X_all, axis=1, keepdims=True) + 1e-8)
+    row_norms = np.linalg.norm(X_norm, axis=1)
+    zero_rows = row_norms < 1e-8
+    if np.any(zero_rows):
+        X_norm[zero_rows] = 1e-8
+
+    # KNN
+    k_actual = min(k + 1, n_samples)
+    nn_model = NearestNeighbors(n_neighbors=k_actual, metric='euclidean')
+    nn_model.fit(X_norm)
+    distances, indices = nn_model.kneighbors(X_norm)
+
+    # 构建嵌入: [归一化特征(20), 邻居加权(20), 差异特征(20), 填充(4)] = 64维
+    embedding_dim = 64
+    kg_embeddings = np.zeros((n_samples, embedding_dim), dtype=np.float32)
+
+    for i in range(n_samples):
+        # 邻居（排除自己）
+        neighbor_indices = indices[i, 1:]
+        neighbor_features = X_norm[neighbor_indices]
+        neighbor_distances = distances[i, 1:]
+
+        # 距离倒数加权
+        weights = 1.0 / np.maximum(neighbor_distances, 1e-8)
+        weights = weights / weights.sum()
+
+        # 邻居特征加权和
+        neighbor_weighted = np.dot(weights, neighbor_features)  # (n_features,)
+
+        # 差异：自己和邻居加权平均的差异
+        diff = X_norm[i] - neighbor_weighted
+
+        # 拼接
+        kg_embeddings[i, :n_features] = X_norm[i]                    # 原始(20)
+        kg_embeddings[i, n_features:2*n_features] = neighbor_weighted   # 邻居加权(20)
+        kg_embeddings[i, 2*n_features:3*n_features] = diff             # 差异(20)
+        # 剩余4维保持为0
+
+    # 分割回三个集
+    kg_train_emb = kg_embeddings[:n_train]
+    kg_val_emb = kg_embeddings[n_train:n_train+n_val]
+    kg_test_emb = kg_embeddings[n_train+n_val:]
+
+    return kg_train_emb, kg_val_emb, kg_test_emb
 
 
 def load_kg_embeddings_v4(fault_emb_path, fault_labels, kg_embed_path=None):

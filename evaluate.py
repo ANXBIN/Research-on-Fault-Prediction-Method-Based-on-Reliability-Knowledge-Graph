@@ -18,7 +18,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
 from tqdm import tqdm
 
-from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4
+from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4, load_kg_embeddings_mlp
 from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2, CNNKGModelV3
 from src.models.gnn_model import GNNModel, GNNKGModel
 
@@ -117,11 +117,17 @@ class Evaluator:
             'data/processed/kg_embeddings.json'
         )
 
+        # MLP专用嵌入：基于KNN的样本级嵌入
+        self.kg_train_emb_mlp, self.kg_val_emb_mlp, self.kg_test_emb_mlp = load_kg_embeddings_mlp(
+            self.X_train, self.X_val, self.X_test, k=20
+        )
+
         print(f"训练集: {len(self.X_train)} 样本")
         print(f"验证集: {len(self.X_val)} 样本")
         print(f"测试集: {len(self.X_test)} 样本")
         print(f"V1 KG嵌入维度: {self.kg_train_emb_v1.shape}")
         print(f"V2 KG嵌入维度: {self.kg_train_emb.shape}")
+        print(f"MLP KNN嵌入维度: {self.kg_train_emb_mlp.shape}")
 
     def get_available_models(self):
         """检测models文件夹中可用的模型"""
@@ -129,8 +135,8 @@ class Evaluator:
         available = {}
 
         mlp_path = models_dir / 'mlp_model.pt'
-        kg_v1_path = models_dir / 'kg_enhanced_mlp_v1_model.pt'
-        kg_v2_path = models_dir / 'kg_enhanced_mlp_v2_model.pt'
+        kg_v1_path = models_dir / 'mlp_kg_model.pt'
+        kg_v2_path = models_dir / 'mlp_kg_v2_model.pt'
         cnn_path = models_dir / 'cnn_model.pt'
         cnn_kg_path = models_dir / 'cnn_kg_model.pt'
         cnn_kg_v2_path = models_dir / 'cnn_kg_v2_model.pt'
@@ -141,9 +147,9 @@ class Evaluator:
         if mlp_path.exists():
             available['MLP'] = mlp_path
         if kg_v1_path.exists():
-            available['KG_Enhanced_MLP_V1'] = kg_v1_path
+            available['MLP_KG'] = kg_v1_path
         if kg_v2_path.exists():
-            available['KG_Enhanced_MLP_V2'] = kg_v2_path
+            available['MLP_KG_V2'] = kg_v2_path
         if cnn_path.exists():
             available['CNN'] = cnn_path
         if cnn_kg_path.exists():
@@ -174,34 +180,35 @@ class Evaluator:
         return model
 
     def load_kg_mlp_v1(self):
-        """加载KG增强MLP V1模型"""
-        checkpoint = torch.load('models/kg_enhanced_mlp_v1_model.pt', map_location=self.device)
+        """加载MLP-KG模型"""
+        checkpoint = torch.load('models/mlp_kg_model.pt', map_location=self.device)
         saved_config = checkpoint.get('config', {})
 
         model = KGEnhancedMLPModel(config_path='config.yaml')
         model.hidden_dim = saved_config.get('hidden_dim', self.best_config['hidden_dim'])
+        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 64)
         model.dropout = saved_config.get('dropout', self.best_config['dropout'])
         model.learning_rate = saved_config.get('learning_rate', self.best_config['lr'])
         model.fault_to_idx = self.fault_to_idx
         model.build_model(self.X_train.shape[1], len(self.fault_types))
         model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] KG-MLP V1模型已加载 (hidden_dim={model.hidden_dim})")
+        print(f"[INFO] MLP-KG模型已加载 (hidden_dim={model.hidden_dim}, kg_dim={model.kg_embedding_dim})")
         return model
 
     def load_kg_mlp_v2(self):
-        """加载KG增强MLP V2模型"""
-        checkpoint = torch.load('models/kg_enhanced_mlp_v2_model.pt', map_location=self.device)
+        """加载MLP-KG-V2模型"""
+        checkpoint = torch.load('models/mlp_kg_v2_model.pt', map_location=self.device)
         saved_config = checkpoint.get('config', {})
 
         model = KGEnhancedMLPV2Model(config_path='config.yaml')
         model.hidden_dim = saved_config.get('hidden_dim', self.best_config['hidden_dim'])
-        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
+        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 64)
         model.dropout = saved_config.get('dropout', self.best_config['dropout'])
         model.learning_rate = saved_config.get('learning_rate', self.best_config['lr'])
         model.fault_to_idx = self.fault_to_idx
         model.build_model(self.X_train.shape[1], len(self.fault_types))
         model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] KG-MLP V2模型已加载 (hidden_dim={model.hidden_dim})")
+        print(f"[INFO] MLP-KG-V2模型已加载 (hidden_dim={model.hidden_dim}, kg_dim={model.kg_embedding_dim})")
         return model
 
     def load_cnn(self):
@@ -343,14 +350,14 @@ class Evaluator:
                 model = self.load_mlp()
                 val, _ = self.evaluate_model(model, self.X_val, self.y_val, None, model_name)
                 test, _ = self.evaluate_model(model, self.X_test, self.y_test, None, model_name)
-            elif model_name == 'KG_Enhanced_MLP_V1':
+            elif model_name == 'MLP_KG':
                 model = self.load_kg_mlp_v1()
-                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb_v1, model_name)
-                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb_v1, model_name)
-            elif model_name == 'KG_Enhanced_MLP_V2':
+                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb_mlp, model_name)
+                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb_mlp, model_name)
+            elif model_name == 'MLP_KG_V2':
                 model = self.load_kg_mlp_v2()
-                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
-                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
+                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb_mlp, model_name)
+                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb_mlp, model_name)
             elif model_name == 'CNN':
                 model = self.load_cnn()
                 val, _ = self.evaluate_model(model, self.X_val, self.y_val, None, model_name)
@@ -392,7 +399,7 @@ class Evaluator:
         print("=" * 60)
         print(f"{'模型':<25} | {'验证集准确率':<12} | {'测试集准确率':<12} | {'验证F1':<10} | {'测试F1':<10}")
         print("-" * 80)
-        for model_name in ['MLP', 'KG_Enhanced_MLP_V1', 'KG_Enhanced_MLP_V2', 'CNN', 'CNN_KG', 'CNN_KG_V2', 'GNN', 'GNN_KG']:
+        for model_name in ['MLP', 'MLP_KG', 'MLP_KG_V2', 'CNN', 'CNN_KG', 'CNN_KG_V2', 'GNN', 'GNN_KG']:
             if model_name in results['validation']:
                 val = results['validation'][model_name]
                 test = results['test'][model_name]

@@ -38,8 +38,8 @@ def plot_model_comparison(results, save_path='results/figures/model_comparison.p
     # Model name mapping
     name_map = {
         'MLP': 'MLP\n(Baseline)',
-        'KG_Enhanced_MLP_V1': 'KG-MLP V1\n(Global Embedding)',
-        'KG_Enhanced_MLP_V2': 'KG-MLP V2\n(Fault-Level Embedding)',
+        'MLP_KG': 'MLP-KG\n(Global Embedding)',
+        'MLP_KG_V2': 'MLP-KG-V2\n(Fault-Level Embedding)',
         'CNN': 'CNN\n(1D Conv)',
         'CNN_KG': 'CNN+KG\n(拼接融合)',
         'CNN_KG_V2': 'CNN+KG V2\n(门控融合)',
@@ -118,8 +118,8 @@ def plot_heatmap_comparison(results, save_path='results/figures/metrics_heatmap.
     models = list(results['validation'].keys())
     name_map = {
         'MLP': 'MLP',
-        'KG_Enhanced_MLP_V1': 'KG-MLP V1',
-        'KG_Enhanced_MLP_V2': 'KG-MLP V2',
+        'MLP_KG': 'MLP-KG',
+        'MLP_KG_V2': 'MLP-KG-V2',
         'CNN': 'CNN',
         'CNN_KG': 'CNN+KG',
         'CNN_KG_V2': 'CNN+KG V2',
@@ -167,8 +167,8 @@ def plot_improvement_bar(results, save_path='results/figures/improvement_compari
 
     name_map = {
         'MLP': 'MLP\n(Baseline)',
-        'KG_Enhanced_MLP_V1': 'KG-MLP V1',
-        'KG_Enhanced_MLP_V2': 'KG-MLP V2',
+        'MLP_KG': 'MLP-KG',
+        'MLP_KG_V2': 'MLP-KG-V2',
         'CNN': 'CNN',
         'CNN_KG': 'CNN+KG',
         'CNN_KG_V2': 'CNN+KG V2',
@@ -208,8 +208,8 @@ def generate_summary_report(results, save_path='results/figures/summary_report.p
     models = list(results['validation'].keys())
     name_map = {
         'MLP': 'MLP',
-        'KG_Enhanced_MLP_V1': 'KG-MLP V1',
-        'KG_Enhanced_MLP_V2': 'KG-MLP V2',
+        'MLP_KG': 'MLP-KG',
+        'MLP_KG_V2': 'MLP-KG-V2',
         'CNN': 'CNN',
         'CNN_KG': 'CNN+KG',
         'CNN_KG_V2': 'CNN+KG V2',
@@ -331,14 +331,14 @@ def plot_kg_enhancement_comparison(results, save_path='results/figures/kg_enhanc
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
 
     # Define comparison pairs
-    mlp_models = ['MLP', 'KG_Enhanced_MLP_V1', 'KG_Enhanced_MLP_V2']
+    mlp_models = ['MLP', 'MLP_KG', 'MLP_KG_V2']
     cnn_models = ['CNN', 'CNN_KG', 'CNN_KG_V2', 'CNN_KG_V3']
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
     # MLP vs KG-MLP comparison
     ax1 = axes[0]
-    mlp_names = ['MLP\n(Baseline)', 'KG-MLP V1\n(Global)', 'KG-MLP V2\n(Fault-Level)']
+    mlp_names = ['MLP\n(Baseline)', 'MLP-KG\n(Global)', 'MLP-KG-V2\n(Fault-Level)']
     mlp_val = [results['validation'][m]['accuracy'] for m in mlp_models]
     mlp_test = [results['test'][m]['accuracy'] for m in mlp_models]
 
