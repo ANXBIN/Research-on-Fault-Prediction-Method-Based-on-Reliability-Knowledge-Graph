@@ -8,7 +8,7 @@ project:
 neo4j:
   uri: "bolt://localhost:7687"
   username: "neo4j"
-  password: "H13608700987rq"
+  password: "${NEO4J_PASSWORD}"  # 从环境变量读取: export NEO4J_PASSWORD=your_password
   container_name: "neo4j"
 
 # 数据预处理配置
@@ -44,28 +44,6 @@ models:
     epochs: 100
     batch_size: 256
 
-  rf:
-    n_estimators: 200
-    max_depth: 15
-    min_samples_split: 5
-    learning_rate: 0.001
-    epochs: 100
-
-  kg_enhanced_gnn:
-    hidden_dim: 128
-    num_layers: 3
-    dropout: 0.3
-    kg_embedding_dim: 64
-    learning_rate: 0.001
-    epochs: 100
-
-  kg_enhanced_rf:
-    n_estimators: 200
-    max_depth: 15
-    kg_embedding_dim: 64
-    learning_rate: 0.001
-    epochs: 100
-
   mlp:
     hidden_dim: 128
     dropout: 0.3
@@ -81,7 +59,7 @@ models:
 
   kg_enhanced_mlp_v2:
     hidden_dim: 128
-    kg_embedding_dim: 33
+    kg_embedding_dim: 64
     dropout: 0.3
     learning_rate: 0.001
     epochs: 100
@@ -113,12 +91,47 @@ models:
     learning_rate: 0.001
     epochs: 100
 
+  gnn_kg_v2:
+    hidden_dim: 256
+    num_layers: 3
+    kg_embedding_dim: 33
+    dropout: 0.3
+    learning_rate: 0.001
+    epochs: 100
+    batch_size: 256
+
+  gat:
+    hidden_dim: 256
+    heads: 4
+    dropout: 0.3
+    learning_rate: 0.001
+    epochs: 100
+    batch_size: 256
+
+  gat_kg:
+    hidden_dim: 256
+    heads: 4
+    kg_embedding_dim: 33
+    dropout: 0.3
+    learning_rate: 0.001
+    epochs: 100
+    batch_size: 256
+
+  gat_kg_v2:
+    hidden_dim: 256
+    heads: 4
+    kg_embedding_dim: 33
+    dropout: 0.3
+    learning_rate: 0.001
+    epochs: 100
+    batch_size: 256
+
 # 训练配置
 training:
   test_size: 0.2
   val_size: 0.1
   random_seed: 42
-  early_stopping_patience: 15
+  early_stopping_patience: 30
 
 # 可视化配置
 visualization:

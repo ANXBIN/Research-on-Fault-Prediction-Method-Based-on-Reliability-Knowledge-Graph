@@ -15,12 +15,12 @@ import json
 import argparse
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, confusion_matrix
 from tqdm import tqdm
 
 from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4, load_kg_embeddings_mlp
 from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2, CNNKGModelV3
-from src.models.gnn_model import GNNModel, GNNKGModel
+from src.models.gnn_model import GNNModel, GNNKGModel, GNNKGModelV2, GATModel, GATKGModel, GATKGModelV2
 
 
 class Evaluator:
@@ -143,6 +143,10 @@ class Evaluator:
         cnn_kg_v3_path = models_dir / 'cnn_kg_v3_model.pt'
         gnn_path = models_dir / 'gnn_model.pt'
         gnn_kg_path = models_dir / 'gnn_kg_model.pt'
+        gnn_kg_v2_path = models_dir / 'gnn_kg_v2_model.pt'
+        gat_path = models_dir / 'gat_model.pt'
+        gat_kg_path = models_dir / 'gat_kg_model.pt'
+        gat_kg_v2_path = models_dir / 'gat_kg_v2_model.pt'
 
         if mlp_path.exists():
             available['MLP'] = mlp_path
@@ -162,6 +166,14 @@ class Evaluator:
             available['GNN'] = gnn_path
         if gnn_kg_path.exists():
             available['GNN_KG'] = gnn_kg_path
+        if gnn_kg_v2_path.exists():
+            available['GNN_KG_V2'] = gnn_kg_v2_path
+        if gat_path.exists():
+            available['GAT'] = gat_path
+        if gat_kg_path.exists():
+            available['GAT_KG'] = gat_kg_path
+        if gat_kg_v2_path.exists():
+            available['GAT_KG_V2'] = gat_kg_v2_path
 
         return available
 
@@ -303,6 +315,71 @@ class Evaluator:
         print(f"[INFO] GNN-KG模型已加载 (hidden_dim={model.hidden_dim})")
         return model
 
+    def load_gnn_kg_v2(self):
+        """加载GNN-KG-V2模型 (KG投影增强+深层融合)"""
+        checkpoint = torch.load('models/gnn_kg_v2_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+
+        model = GNNKGModelV2(config_path='config.yaml')
+        model.hidden_dim = saved_config.get('hidden_dim', 256)
+        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
+        model.batch_size = saved_config.get('batch_size', 256)
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+        model.model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"[INFO] GNN-KG-V2模型已加载 (hidden_dim={model.hidden_dim}, kg_dim={model.kg_embedding_dim})")
+        return model
+
+    def load_gat(self):
+        """加载GAT模型"""
+        checkpoint = torch.load('models/gat_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+
+        model = GATModel(config_path='config.yaml')
+        model.hidden_dim = saved_config.get('hidden_dim', 256)
+        model.heads = saved_config.get('heads', 4)
+        model.dropout = saved_config.get('dropout', 0.3)
+        model.batch_size = saved_config.get('batch_size', 256)
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+        model.model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"[INFO] GAT模型已加载 (hidden_dim={model.hidden_dim}, heads={model.heads})")
+        return model
+
+    def load_gat_kg(self):
+        """加载GAT-KG融合模型"""
+        checkpoint = torch.load('models/gat_kg_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+
+        model = GATKGModel(config_path='config.yaml')
+        model.hidden_dim = saved_config.get('hidden_dim', 256)
+        model.heads = saved_config.get('heads', 4)
+        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
+        model.dropout = saved_config.get('dropout', 0.3)
+        model.batch_size = saved_config.get('batch_size', 256)
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+        model.model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"[INFO] GAT-KG模型已加载 (hidden_dim={model.hidden_dim}, heads={model.heads})")
+        return model
+
+    def load_gat_kg_v2(self):
+        """加载GAT-KG-V2模型"""
+        checkpoint = torch.load('models/gat_kg_v2_model.pt', map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+
+        model = GATKGModelV2(config_path='config.yaml')
+        model.hidden_dim = saved_config.get('hidden_dim', 256)
+        model.heads = saved_config.get('heads', 4)
+        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
+        model.dropout = saved_config.get('dropout', 0.3)
+        model.batch_size = saved_config.get('batch_size', 256)
+        model.fault_to_idx = self.fault_to_idx
+        model.build_model(self.X_train.shape[1], len(self.fault_types))
+        model.model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"[INFO] GAT-KG-V2模型已加载 (hidden_dim={model.hidden_dim}, heads={model.heads})")
+        return model
+
     def evaluate_model(self, model, X, y, kg_emb=None, model_name="Model"):
         """评估单个模型"""
         if kg_emb is not None:
@@ -314,6 +391,44 @@ class Evaluator:
         f1 = f1_score(y, y_pred, average='weighted')
 
         return {'accuracy': acc, 'f1': f1}, y_pred
+
+    def plot_confusion_matrix(self, y_true, y_pred, model_name, save_path='results/figures'):
+        """生成并保存混淆矩阵图"""
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
+        Path(save_path).mkdir(parents=True, exist_ok=True)
+
+        cm = confusion_matrix(y_true, y_pred)
+        labels = self.label_encoder.classes_
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+        im = ax.imshow(cm, interpolation='nearest', cmap='Blues')
+        ax.figure.colorbar(im, ax=ax)
+
+        ax.set(xticks=np.arange(len(labels)),
+               yticks=np.arange(len(labels)),
+               xticklabels=labels, yticklabels=labels,
+               title=f'{model_name} 混淆矩阵',
+               ylabel='真实标签',
+               xlabel='预测标签')
+
+        plt.setp(ax.get_xticklabels(), rotation=45, ha='right', rotation_mode='anchor')
+
+        # 在格子中显示数值
+        thresh = cm.max() / 2.
+        for i in range(len(labels)):
+            for j in range(len(labels)):
+                ax.text(j, i, format(cm[i, j], 'd'),
+                        ha='center', va='center',
+                        color='white' if cm[i, j] > thresh else 'black')
+
+        fig.tight_layout()
+        filepath = Path(save_path) / f'{model_name.lower().replace(" ", "_")}_confusion_matrix.png'
+        fig.savefig(filepath, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"  混淆矩阵已保存: {filepath}")
 
     def run(self):
         """运行评估流程"""
@@ -382,6 +497,22 @@ class Evaluator:
                 model = self.load_gnn_kg()
                 val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
                 test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
+            elif model_name == 'GNN_KG_V2':
+                model = self.load_gnn_kg_v2()
+                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
+                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
+            elif model_name == 'GAT':
+                model = self.load_gat()
+                val, _ = self.evaluate_model(model, self.X_val, self.y_val, None, model_name)
+                test, _ = self.evaluate_model(model, self.X_test, self.y_test, None, model_name)
+            elif model_name == 'GAT_KG':
+                model = self.load_gat_kg()
+                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
+                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
+            elif model_name == 'GAT_KG_V2':
+                model = self.load_gat_kg_v2()
+                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
+                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
 
             results['validation'][model_name] = val
             results['test'][model_name] = test
@@ -399,11 +530,65 @@ class Evaluator:
         print("=" * 60)
         print(f"{'模型':<25} | {'验证集准确率':<12} | {'测试集准确率':<12} | {'验证F1':<10} | {'测试F1':<10}")
         print("-" * 80)
-        for model_name in ['MLP', 'MLP_KG', 'MLP_KG_V2', 'CNN', 'CNN_KG', 'CNN_KG_V2', 'GNN', 'GNN_KG']:
+        best_model_name = None
+        best_test_acc = 0
+        for model_name in ['MLP', 'MLP_KG', 'MLP_KG_V2', 'CNN', 'CNN_KG', 'CNN_KG_V2', 'CNN_KG_V3', 'GNN', 'GNN_KG', 'GNN_KG_V2', 'GAT', 'GAT_KG', 'GAT_KG_V2']:
             if model_name in results['validation']:
                 val = results['validation'][model_name]
                 test = results['test'][model_name]
                 print(f"{model_name:<25} | {val['accuracy']:.4f}      | {test['accuracy']:.4f}      | {val['f1']:.4f}     | {test['f1']:.4f}")
+                if test['accuracy'] > best_test_acc:
+                    best_test_acc = test['accuracy']
+                    best_model_name = model_name
+
+        # 为最佳模型生成混淆矩阵
+        if best_model_name and best_model_name in available:
+            print(f"\n为最佳模型 {best_model_name} 生成混淆矩阵...")
+            best_model_path = available[best_model_name]
+            model_display_name = best_model_name.replace('_', ' ')
+
+            # 重新加载最佳模型获取预测
+            if best_model_name == 'MLP':
+                model = self.load_mlp()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, None, best_model_name)
+            elif best_model_name == 'MLP_KG':
+                model = self.load_kg_mlp_v1()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb_mlp, best_model_name)
+            elif best_model_name == 'MLP_KG_V2':
+                model = self.load_kg_mlp_v2()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb_mlp, best_model_name)
+            elif best_model_name == 'CNN':
+                model = self.load_cnn()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, None, best_model_name)
+            elif best_model_name == 'CNN_KG':
+                model = self.load_cnn_kg()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, best_model_name)
+            elif best_model_name == 'CNN_KG_V2':
+                model = self.load_cnn_kg_v2()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, best_model_name)
+            elif best_model_name == 'CNN_KG_V3':
+                model = self.load_cnn_kg_v3()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, best_model_name)
+            elif best_model_name == 'GNN':
+                model = self.load_gnn()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, None, best_model_name)
+            elif best_model_name == 'GNN_KG':
+                model = self.load_gnn_kg()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, best_model_name)
+            elif best_model_name == 'GNN_KG_V2':
+                model = self.load_gnn_kg_v2()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, best_model_name)
+            elif best_model_name == 'GAT':
+                model = self.load_gat()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, None, best_model_name)
+            elif best_model_name == 'GAT_KG':
+                model = self.load_gat_kg()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, best_model_name)
+            elif best_model_name == 'GAT_KG_V2':
+                model = self.load_gat_kg_v2()
+                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, best_model_name)
+
+            self.plot_confusion_matrix(self.y_test, y_pred, model_display_name)
 
         print(f"\n详细结果已保存至: results/evaluation_results.json")
 

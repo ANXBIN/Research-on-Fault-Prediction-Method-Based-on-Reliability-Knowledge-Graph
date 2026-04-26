@@ -7,12 +7,60 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.neighbors import NearestNeighbors
 import numpy as np
 import yaml
-import joblib
 import json
+
+
+class BaseModelWrapper:
+    """模型包装器基类 - 提取公共逻辑"""
+
+    def __init__(self, config_path='config.yaml', config_key='mlp'):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            self.config = yaml.safe_load(f)
+
+        model_cfg = self.config['models'].get(config_key, {})
+        self.hidden_dim = model_cfg.get('hidden_dim', 128)
+        self.dropout = model_cfg.get('dropout', 0.3)
+        self.learning_rate = model_cfg.get('learning_rate', 0.001)
+        self.epochs = model_cfg.get('epochs', 100)
+
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            self.device = torch.device('mps')
+        else:
+            self.device = torch.device('cpu')
+
+        self.model = None
+        self.optimizer = None
+        self.fault_to_idx = {}
+
+    def save_model(self, path):
+        """保存模型"""
+        config = {
+            'hidden_dim': self.hidden_dim,
+            'dropout': self.dropout,
+            'learning_rate': self.learning_rate
+        }
+        if hasattr(self, 'kg_embedding_dim'):
+            config['kg_embedding_dim'] = self.kg_embedding_dim
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'fault_to_idx': self.fault_to_idx,
+            'config': config
+        }, path)
+        print(f"[INFO] 模型已保存至: {path}")
+
+    def load_model(self, path):
+        """加载模型"""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.fault_to_idx = checkpoint['fault_to_idx']
+        print(f"[INFO] 模型已从: {path} 加载")
 
 
 class PlainMLP(nn.Module):
@@ -99,131 +147,62 @@ class KGEnhancedMLP(nn.Module):
         return self.classifier(x_fused)
 
 
-class MLPModel:
+class MLPModel(BaseModelWrapper):
     """MLP模型包装类"""
 
     def __init__(self, config_path='config.yaml'):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
-
-        model_cfg = self.config['models'].get('mlp', {})
-        self.hidden_dim = model_cfg.get('hidden_dim', 128)
-        self.dropout = model_cfg.get('dropout', 0.3)
-        self.learning_rate = model_cfg.get('learning_rate', 0.001)
-        self.epochs = model_cfg.get('epochs', 100)
-
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
-        elif torch.backends.mps.is_available():
-            self.device = torch.device('mps')
-        else:
-            self.device = torch.device('cpu')
-
-        self.model = None
-        self.optimizer = None
-        self.fault_to_idx = {}
+        super().__init__(config_path, 'mlp')
 
     def build_model(self, n_features, n_classes):
-        """构建模型"""
         self.model = PlainMLP(
             in_channels=n_features,
             hidden_channels=self.hidden_dim,
             out_channels=n_classes,
             dropout=self.dropout
         ).to(self.device)
-
         self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate)
         return self.model
 
     def train_epoch(self, X, y):
-        """训练一个epoch"""
         self.model.train()
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         self.optimizer.zero_grad()
         out = self.model(X_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         loss.backward()
         self.optimizer.step()
-
         pred = out.argmax(dim=1)
         acc = (pred == y_tensor).sum().item() / len(y_tensor)
-
         return loss.item(), acc
 
     @torch.no_grad()
     def evaluate(self, X, y):
-        """评估模型"""
         self.model.eval()
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         out = self.model(X_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
-
         pred = out.argmax(dim=1)
         acc = (pred == y_tensor).sum().item() / len(y_tensor)
-
         return {'loss': loss.item(), 'accuracy': acc}, pred.cpu().numpy()
 
     def predict(self, X):
-        """预测"""
         self.model.eval()
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         out = self.model(X_tensor)
         return out.argmax(dim=1).cpu().numpy()
 
-    def save_model(self, path):
-        """保存模型"""
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'fault_to_idx': self.fault_to_idx,
-            'config': {
-                'hidden_dim': self.hidden_dim,
-                'dropout': self.dropout,
-                'learning_rate': self.learning_rate
-            }
-        }, path)
-        print(f"[INFO] 模型已保存至: {path}")
 
-    def load_model(self, path):
-        """加载模型"""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.fault_to_idx = checkpoint['fault_to_idx']
-        print(f"[INFO] 模型已从: {path} 加载")
-
-
-class KGEnhancedMLPModel:
+class KGEnhancedMLPModel(BaseModelWrapper):
     """知识图谱增强MLP模型包装类"""
 
     def __init__(self, config_path='config.yaml'):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
-
+        super().__init__(config_path, 'kg_enhanced_mlp')
         model_cfg = self.config['models'].get('kg_enhanced_mlp', {})
-        self.hidden_dim = model_cfg.get('hidden_dim', 128)
         self.kg_embedding_dim = model_cfg.get('kg_embedding_dim', 64)
-        self.dropout = model_cfg.get('dropout', 0.3)
-        self.learning_rate = model_cfg.get('learning_rate', 0.001)
-        self.epochs = model_cfg.get('epochs', 100)
-
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
-        elif torch.backends.mps.is_available():
-            self.device = torch.device('mps')
-        else:
-            self.device = torch.device('cpu')
-
-        self.model = None
-        self.optimizer = None
-        self.fault_to_idx = {}
 
     def build_model(self, n_features, n_classes):
-        """构建模型"""
         self.model = KGEnhancedMLP(
             in_channels=n_features,
             kg_embedding_dim=self.kg_embedding_dim,
@@ -231,78 +210,174 @@ class KGEnhancedMLPModel:
             out_channels=n_classes,
             dropout=self.dropout
         ).to(self.device)
-
         self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate)
         return self.model
 
     def train_epoch(self, X, y, kg_embeddings):
-        """训练一个epoch"""
         self.model.train()
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         self.optimizer.zero_grad()
         out = self.model(X_tensor, kg_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         loss.backward()
         self.optimizer.step()
-
         pred = out.argmax(dim=1)
         acc = (pred == y_tensor).sum().item() / len(y_tensor)
-
         return loss.item(), acc
 
     @torch.no_grad()
     def evaluate(self, X, y, kg_embeddings):
-        """评估模型"""
         self.model.eval()
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         out = self.model(X_tensor, kg_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
-
         pred = out.argmax(dim=1)
         acc = (pred == y_tensor).sum().item() / len(y_tensor)
-
         return {'loss': loss.item(), 'accuracy': acc}, pred.cpu().numpy()
 
     def predict(self, X, kg_embeddings):
-        """预测"""
         self.model.eval()
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         out = self.model(X_tensor, kg_tensor)
         return out.argmax(dim=1).cpu().numpy()
 
-    def save_model(self, path):
-        """保存模型"""
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'fault_to_idx': self.fault_to_idx,
-            'config': {
-                'hidden_dim': self.hidden_dim,
-                'kg_embedding_dim': self.kg_embedding_dim,
-                'dropout': self.dropout,
-                'learning_rate': self.learning_rate
-            }
-        }, path)
-        print(f"[INFO] 模型已保存至: {path}")
 
-    def load_model(self, path):
-        """加载模型"""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.fault_to_idx = checkpoint['fault_to_idx']
-        print(f"[INFO] 模型已从: {path} 加载")
+class KGEnhancedMLP_V2(nn.Module):
+    """知识图谱增强MLP V2 - 门控融合架构
+
+    改进点（相比V1的简单拼接）：
+    - 门控机制自适应调整特征和KG的权重
+    - 更深的融合层 + 残差连接
+    - LayerNorm稳定训练
+    """
+
+    def __init__(self, in_channels, kg_embedding_dim, hidden_channels,
+                 out_channels, dropout=0.3):
+        super().__init__()
+
+        # 特征编码器
+        self.feature_net = nn.Sequential(
+            nn.Linear(in_channels, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        # KG编码器
+        self.kg_net = nn.Sequential(
+            nn.Linear(kg_embedding_dim, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        # 门控机制 - 自适应权重
+        self.gate = nn.Sequential(
+            nn.Linear(hidden_channels * 2, hidden_channels),
+            nn.Sigmoid()
+        )
+
+        # 深层融合 (3*hidden: cnn, kg, gated)
+        self.fusion = nn.Sequential(
+            nn.Linear(hidden_channels * 3, hidden_channels * 2),
+            nn.LayerNorm(hidden_channels * 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels * 2, hidden_channels),
+            nn.LayerNorm(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        # 分类器
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.LayerNorm(hidden_channels // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels // 2, out_channels)
+        )
+
+    def forward(self, x, kg_embedding):
+        feat = self.feature_net(x)
+        kg = self.kg_net(kg_embedding)
+
+        # 门控融合
+        concat = torch.cat([feat, kg], dim=1)
+        gate = self.gate(concat)
+        gated = gate * feat + (1 - gate) * kg
+
+        # 拼接 + 深层融合
+        fused = torch.cat([feat, kg, gated], dim=1)
+        fused = self.fusion(fused)
+
+        return self.classifier(fused)
 
 
-# 别名：KGEnhancedMLPV2Model = KGEnhancedMLPModel (使用故障级别嵌入)
-KGEnhancedMLPV2Model = KGEnhancedMLPModel
+class KGEnhancedMLPV2Model(BaseModelWrapper):
+    """知识图谱增强MLP V2包装类 - 门控融合"""
+
+    def __init__(self, config_path='config.yaml'):
+        super().__init__(config_path, 'kg_enhanced_mlp_v2')
+        model_cfg = self.config['models'].get('kg_enhanced_mlp_v2', {})
+        self.kg_embedding_dim = model_cfg.get('kg_embedding_dim', 64)
+
+    def build_model(self, n_features, n_classes):
+        self.model = KGEnhancedMLP_V2(
+            in_channels=n_features,
+            kg_embedding_dim=self.kg_embedding_dim,
+            hidden_channels=self.hidden_dim,
+            out_channels=n_classes,
+            dropout=self.dropout
+        ).to(self.device)
+        self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate)
+        return self.model
+
+    def train_epoch(self, X, y, kg_embeddings):
+        self.model.train()
+        X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
+        kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
+        y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
+        self.optimizer.zero_grad()
+        out = self.model(X_tensor, kg_tensor)
+        loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
+        loss.backward()
+        self.optimizer.step()
+        pred = out.argmax(dim=1)
+        acc = (pred == y_tensor).sum().item() / len(y_tensor)
+        return loss.item(), acc
+
+    @torch.no_grad()
+    def evaluate(self, X, y, kg_embeddings):
+        self.model.eval()
+        X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
+        kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
+        y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
+        out = self.model(X_tensor, kg_tensor)
+        loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
+        pred = out.argmax(dim=1)
+        acc = (pred == y_tensor).sum().item() / len(y_tensor)
+        return {'loss': loss.item(), 'accuracy': acc}, pred.cpu().numpy()
+
+    def predict(self, X, kg_embeddings):
+        self.model.eval()
+        X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
+        kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
+        out = self.model(X_tensor, kg_tensor)
+        return out.argmax(dim=1).cpu().numpy()
 
 
 def build_knn_graph_features(X, k=10):
@@ -345,7 +420,8 @@ def load_kg_embeddings_mlp(X_train, X_val, X_test, k=20):
     """
     为MLP模型构建基于KNN的样本级嵌入
 
-    每个样本的嵌入 = [归一化原始特征, 邻居特征加权和, 故障上下文]
+    每个样本的嵌入 = [归一化原始特征, 邻居特征加权和, 差异特征, 填充]
+    KNN索引仅在训练集上构建，避免数据泄露。
 
     Args:
         X_train: 训练集特征
@@ -354,60 +430,58 @@ def load_kg_embeddings_mlp(X_train, X_val, X_test, k=20):
         k: 近邻数
 
     Returns:
-        kg_train_emb, kg_val_emb, kg_test_emb: KNN嵌入
+        kg_train_emb, kg_val_emb, kg_test_emb: KNN嵌入 (64维)
     """
-    # 合并所有数据用KNN
-    X_all = np.vstack([X_train, X_val, X_test])
-    n_train = len(X_train)
-    n_val = len(X_val)
-    n_test = len(X_test)
-
-    n_samples = len(X_all)
-    n_features = X_all.shape[1]
-
-    # 归一化
-    X_norm = X_all / (np.linalg.norm(X_all, axis=1, keepdims=True) + 1e-8)
-    row_norms = np.linalg.norm(X_norm, axis=1)
-    zero_rows = row_norms < 1e-8
-    if np.any(zero_rows):
-        X_norm[zero_rows] = 1e-8
-
-    # KNN
-    k_actual = min(k + 1, n_samples)
-    nn_model = NearestNeighbors(n_neighbors=k_actual, metric='euclidean')
-    nn_model.fit(X_norm)
-    distances, indices = nn_model.kneighbors(X_norm)
-
-    # 构建嵌入: [归一化特征(20), 邻居加权(20), 差异特征(20), 填充(4)] = 64维
+    n_features = X_train.shape[1]
     embedding_dim = 64
-    kg_embeddings = np.zeros((n_samples, embedding_dim), dtype=np.float32)
 
-    for i in range(n_samples):
-        # 邻居（排除自己）
-        neighbor_indices = indices[i, 1:]
-        neighbor_features = X_norm[neighbor_indices]
-        neighbor_distances = distances[i, 1:]
+    # 仅在训练集上归一化并构建KNN索引
+    X_train_norm = X_train / (np.linalg.norm(X_train, axis=1, keepdims=True) + 1e-8)
+    k_actual = min(k + 1, len(X_train))  # +1 因为训练集查询会包含自己
 
-        # 距离倒数加权
-        weights = 1.0 / np.maximum(neighbor_distances, 1e-8)
-        weights = weights / weights.sum()
+    nn_model = NearestNeighbors(n_neighbors=k_actual, metric='euclidean')
+    nn_model.fit(X_train_norm)
 
-        # 邻居特征加权和
-        neighbor_weighted = np.dot(weights, neighbor_features)  # (n_features,)
+    def _build_embedding(X_query, exclude_self=False):
+        """为查询样本构建KNN嵌入，邻居全部来自训练集"""
+        X_query_norm = X_query / (np.linalg.norm(X_query, axis=1, keepdims=True) + 1e-8)
+        distances, indices = nn_model.kneighbors(X_query_norm)
 
-        # 差异：自己和邻居加权平均的差异
-        diff = X_norm[i] - neighbor_weighted
+        n_query = len(X_query)
+        kg_emb = np.zeros((n_query, embedding_dim), dtype=np.float32)
 
-        # 拼接
-        kg_embeddings[i, :n_features] = X_norm[i]                    # 原始(20)
-        kg_embeddings[i, n_features:2*n_features] = neighbor_weighted   # 邻居加权(20)
-        kg_embeddings[i, 2*n_features:3*n_features] = diff             # 差异(20)
-        # 剩余4维保持为0
+        for i in range(n_query):
+            if exclude_self:
+                # 训练集查询：第一个邻居可能是自己，跳过
+                neighbor_indices = indices[i, 1:]
+                neighbor_distances = distances[i, 1:]
+            else:
+                # 验证/测试集查询：直接使用所有k个邻居
+                neighbor_indices = indices[i]
+                neighbor_distances = distances[i]
 
-    # 分割回三个集
-    kg_train_emb = kg_embeddings[:n_train]
-    kg_val_emb = kg_embeddings[n_train:n_train+n_val]
-    kg_test_emb = kg_embeddings[n_train+n_val:]
+            neighbor_features = X_train_norm[neighbor_indices]
+
+            # 距离倒数加权
+            weights = 1.0 / np.maximum(neighbor_distances, 1e-8)
+            weights = weights / weights.sum()
+
+            # 邻居特征加权和
+            neighbor_weighted = np.dot(weights, neighbor_features)
+
+            # 差异
+            diff = X_query_norm[i] - neighbor_weighted
+
+            # 拼接: [归一化特征(20), 邻居加权(20), 差异(20), 填充(4)]
+            kg_emb[i, :n_features] = X_query_norm[i]
+            kg_emb[i, n_features:2*n_features] = neighbor_weighted
+            kg_emb[i, 2*n_features:3*n_features] = diff
+
+        return kg_emb
+
+    kg_train_emb = _build_embedding(X_train, exclude_self=True)
+    kg_val_emb = _build_embedding(X_val, exclude_self=False)
+    kg_test_emb = _build_embedding(X_test, exclude_self=False)
 
     return kg_train_emb, kg_val_emb, kg_test_emb
 

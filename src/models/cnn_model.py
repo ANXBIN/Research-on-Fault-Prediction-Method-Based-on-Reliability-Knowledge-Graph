@@ -9,6 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import yaml
 
+from src.models.mlp_model import BaseModelWrapper
+
 
 class CNN1D(nn.Module):
     """1维CNN模型 - 用于时序特征提取"""
@@ -330,30 +332,14 @@ class CNNKG1D_V3(nn.Module):
         return self.classifier(fused)
 
 
-class CNNKGModelV2:
+class CNNKGModelV2(BaseModelWrapper):
     """CNN + KG融合模型 V2 包装类"""
 
     def __init__(self, config_path='config.yaml'):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
-
+        super().__init__(config_path, 'cnn_kg_v2')
         model_cfg = self.config['models'].get('cnn_kg_v2', {})
         self.hidden_dim = model_cfg.get('hidden_channels', 64)
         self.kg_embedding_dim = model_cfg.get('kg_embedding_dim', 33)
-        self.dropout = model_cfg.get('dropout', 0.3)
-        self.learning_rate = model_cfg.get('learning_rate', 0.001)
-        self.epochs = model_cfg.get('epochs', 100)
-
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
-        elif torch.backends.mps.is_available():
-            self.device = torch.device('mps')
-        else:
-            self.device = torch.device('cpu')
-
-        self.model = None
-        self.optimizer = None
-        self.fault_to_idx = {}
 
     def build_model(self, n_features, n_classes):
         self.model = CNNKG1D_V2(
@@ -371,13 +357,11 @@ class CNNKGModelV2:
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         self.optimizer.zero_grad()
         out = self.model(X_tensor, kg_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         loss.backward()
         self.optimizer.step()
-
         pred = out.argmax(dim=1)
         acc = (pred == y_tensor).sum().item() / len(y_tensor)
         return loss.item(), acc
@@ -388,7 +372,6 @@ class CNNKGModelV2:
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         out = self.model(X_tensor, kg_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         pred = out.argmax(dim=1)
@@ -402,52 +385,15 @@ class CNNKGModelV2:
         out = self.model(X_tensor, kg_tensor)
         return out.argmax(dim=1).cpu().numpy()
 
-    def save_model(self, path):
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'fault_to_idx': self.fault_to_idx,
-            'config': {
-                'hidden_dim': self.hidden_dim,
-                'kg_embedding_dim': self.kg_embedding_dim,
-                'dropout': self.dropout,
-                'learning_rate': self.learning_rate
-            }
-        }, path)
-        print(f"[INFO] 模型已保存至: {path}")
 
-    def load_model(self, path):
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.fault_to_idx = checkpoint['fault_to_idx']
-        print(f"[INFO] 模型已从: {path} 加载")
-
-
-class CNNKGModelV3:
+class CNNKGModelV3(BaseModelWrapper):
     """CNN + KG融合模型 V3 包装类 - 残差连接"""
 
     def __init__(self, config_path='config.yaml'):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
-
+        super().__init__(config_path, 'cnn_kg_v3')
         model_cfg = self.config['models'].get('cnn_kg_v3', {})
         self.hidden_dim = model_cfg.get('hidden_channels', 64)
         self.kg_embedding_dim = model_cfg.get('kg_embedding_dim', 33)
-        self.dropout = model_cfg.get('dropout', 0.2)
-        self.learning_rate = model_cfg.get('learning_rate', 0.001)
-        self.epochs = model_cfg.get('epochs', 100)
-
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
-        elif torch.backends.mps.is_available():
-            self.device = torch.device('mps')
-        else:
-            self.device = torch.device('cpu')
-
-        self.model = None
-        self.optimizer = None
-        self.fault_to_idx = {}
 
     def build_model(self, n_features, n_classes):
         self.model = CNNKG1D_V3(
@@ -465,13 +411,11 @@ class CNNKGModelV3:
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         self.optimizer.zero_grad()
         out = self.model(X_tensor, kg_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         loss.backward()
         self.optimizer.step()
-
         pred = out.argmax(dim=1)
         acc = (pred == y_tensor).sum().item() / len(y_tensor)
         return loss.item(), acc
@@ -482,7 +426,6 @@ class CNNKGModelV3:
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         out = self.model(X_tensor, kg_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         pred = out.argmax(dim=1)
@@ -496,51 +439,14 @@ class CNNKGModelV3:
         out = self.model(X_tensor, kg_tensor)
         return out.argmax(dim=1).cpu().numpy()
 
-    def save_model(self, path):
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'fault_to_idx': self.fault_to_idx,
-            'config': {
-                'hidden_dim': self.hidden_dim,
-                'kg_embedding_dim': self.kg_embedding_dim,
-                'dropout': self.dropout,
-                'learning_rate': self.learning_rate
-            }
-        }, path)
-        print(f"[INFO] 模型已保存至: {path}")
 
-    def load_model(self, path):
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.fault_to_idx = checkpoint['fault_to_idx']
-        print(f"[INFO] 模型已从: {path} 加载")
-
-
-class CNNModel:
+class CNNModel(BaseModelWrapper):
     """CNN模型包装类"""
 
     def __init__(self, config_path='config.yaml'):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
-
+        super().__init__(config_path, 'cnn')
         model_cfg = self.config['models'].get('cnn', {})
         self.hidden_dim = model_cfg.get('hidden_channels', 64)
-        self.dropout = model_cfg.get('dropout', 0.3)
-        self.learning_rate = model_cfg.get('learning_rate', 0.001)
-        self.epochs = model_cfg.get('epochs', 100)
-
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
-        elif torch.backends.mps.is_available():
-            self.device = torch.device('mps')
-        else:
-            self.device = torch.device('cpu')
-
-        self.model = None
-        self.optimizer = None
-        self.fault_to_idx = {}
 
     def build_model(self, n_features, n_classes):
         self.model = CNN1D(
@@ -556,13 +462,11 @@ class CNNModel:
         self.model.train()
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         self.optimizer.zero_grad()
         out = self.model(X_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         loss.backward()
         self.optimizer.step()
-
         pred = out.argmax(dim=1)
         acc = (pred == y_tensor).sum().item() / len(y_tensor)
         return loss.item(), acc
@@ -572,7 +476,6 @@ class CNNModel:
         self.model.eval()
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         out = self.model(X_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         pred = out.argmax(dim=1)
@@ -585,51 +488,15 @@ class CNNModel:
         out = self.model(X_tensor)
         return out.argmax(dim=1).cpu().numpy()
 
-    def save_model(self, path):
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'fault_to_idx': self.fault_to_idx,
-            'config': {
-                'hidden_dim': self.hidden_dim,
-                'dropout': self.dropout,
-                'learning_rate': self.learning_rate
-            }
-        }, path)
-        print(f"[INFO] 模型已保存至: {path}")
 
-    def load_model(self, path):
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.fault_to_idx = checkpoint['fault_to_idx']
-        print(f"[INFO] 模型已从: {path} 加载")
-
-
-class CNNKGModel:
+class CNNKGModel(BaseModelWrapper):
     """CNN + KG融合模型包装类"""
 
     def __init__(self, config_path='config.yaml'):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
-
+        super().__init__(config_path, 'cnn_kg')
         model_cfg = self.config['models'].get('cnn_kg', {})
         self.hidden_dim = model_cfg.get('hidden_channels', 64)
         self.kg_embedding_dim = model_cfg.get('kg_embedding_dim', 33)
-        self.dropout = model_cfg.get('dropout', 0.3)
-        self.learning_rate = model_cfg.get('learning_rate', 0.001)
-        self.epochs = model_cfg.get('epochs', 100)
-
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
-        elif torch.backends.mps.is_available():
-            self.device = torch.device('mps')
-        else:
-            self.device = torch.device('cpu')
-
-        self.model = None
-        self.optimizer = None
-        self.fault_to_idx = {}
 
     def build_model(self, n_features, n_classes):
         self.model = CNNKG1D(
@@ -647,13 +514,11 @@ class CNNKGModel:
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         self.optimizer.zero_grad()
         out = self.model(X_tensor, kg_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         loss.backward()
         self.optimizer.step()
-
         pred = out.argmax(dim=1)
         acc = (pred == y_tensor).sum().item() / len(y_tensor)
         return loss.item(), acc
@@ -664,7 +529,6 @@ class CNNKGModel:
         X_tensor = torch.tensor(X, dtype=torch.float).to(self.device)
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         y_tensor = torch.tensor(y, dtype=torch.long).to(self.device)
-
         out = self.model(X_tensor, kg_tensor)
         loss = F.nll_loss(F.log_softmax(out, dim=1), y_tensor)
         pred = out.argmax(dim=1)
@@ -677,24 +541,3 @@ class CNNKGModel:
         kg_tensor = torch.tensor(kg_embeddings, dtype=torch.float).to(self.device)
         out = self.model(X_tensor, kg_tensor)
         return out.argmax(dim=1).cpu().numpy()
-
-    def save_model(self, path):
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'fault_to_idx': self.fault_to_idx,
-            'config': {
-                'hidden_dim': self.hidden_dim,
-                'kg_embedding_dim': self.kg_embedding_dim,
-                'dropout': self.dropout,
-                'learning_rate': self.learning_rate
-            }
-        }, path)
-        print(f"[INFO] 模型已保存至: {path}")
-
-    def load_model(self, path):
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.fault_to_idx = checkpoint['fault_to_idx']
-        print(f"[INFO] 模型已从: {path} 加载")
