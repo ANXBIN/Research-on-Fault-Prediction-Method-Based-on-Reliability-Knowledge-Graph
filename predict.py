@@ -23,9 +23,9 @@ import argparse
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 # 导入模型
-from src.models.mlp_model import KGEnhancedMLPV2Model, load_kg_embeddings_v4
-from src.models.cnn_model import CNNKGModelV2
-from src.models.gnn_model import GNNModel, GNNKGModel, GNNKGModelV2, GATModel, GATKGModel, GATKGModelV2
+from src.models.mlp_model import MLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v4
+from src.models.cnn_model import CNNModel, CNNKGModelV3
+from src.models.gnn_model import GNNModel, GNNKGModel
 
 
 class OllamaClient:
@@ -110,14 +110,12 @@ class Predictor:
     def load_model(self):
         """加载模型"""
         model_path_map = {
-            'MLP-KG-V2': 'mlp_kg_v2_model.pt',
-            'CNN-KG V2': 'cnn_kg_v2_model.pt',
+            'MLP': 'mlp_model.pt',
+            'MLP-KG': 'mlp_kg_model.pt',
+            'CNN': 'cnn_model.pt',
+            'CNN-KG': 'cnn_kg_model.pt',
             'GNN': 'gnn_model.pt',
-            'GNN-KG': 'gnn_kg_model.pt',
-            'GNN-KG-V2': 'gnn_kg_v2_model.pt',
-            'GAT': 'gat_model.pt',
-            'GAT-KG': 'gat_kg_model.pt',
-            'GAT-KG-V2': 'gat_kg_v2_model.pt'
+            'GNN-KG': 'gnn_kg_model.pt'
         }
 
         path = Path('models') / model_path_map.get(self.model_name, 'mlp_kg_v2_model.pt')
@@ -131,12 +129,20 @@ class Predictor:
         checkpoint = torch.load(path, map_location=self.device)
         saved_config = checkpoint.get('config', {})
 
-        if self.model_name == 'MLP-KG-V2':
+        if self.model_name == 'MLP':
+            self.model = MLPModel(config_path='config.yaml')
+            self.model.hidden_dim = saved_config.get('hidden_dim', 128)
+            self.model.dropout = saved_config.get('dropout', 0.3)
+        elif self.model_name == 'MLP-KG':
             self.model = KGEnhancedMLPV2Model(config_path='config.yaml')
             self.model.hidden_dim = saved_config.get('hidden_dim', 192)
-            self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
-        elif self.model_name == 'CNN-KG V2':
-            self.model = CNNKGModelV2(config_path='config.yaml')
+            self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 64)
+        elif self.model_name == 'CNN':
+            self.model = CNNModel(config_path='config.yaml')
+            self.model.hidden_dim = saved_config.get('hidden_dim', 64)
+            self.model.dropout = saved_config.get('dropout', 0.3)
+        elif self.model_name == 'CNN-KG':
+            self.model = CNNKGModelV3(config_path='config.yaml')
             self.model.hidden_dim = saved_config.get('hidden_dim', 64)
             self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
         elif self.model_name == 'GNN':
@@ -150,28 +156,6 @@ class Predictor:
             self.model.hidden_dim = saved_config.get('hidden_dim', 256)
             self.model.num_layers = saved_config.get('num_layers', 4)
             self.model.dropout = saved_config.get('dropout', 0.3)
-            self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
-            self.model.batch_size = saved_config.get('batch_size', 256)
-        elif self.model_name == 'GNN-KG-V2':
-            self.model = GNNKGModelV2(config_path='config.yaml')
-            self.model.hidden_dim = saved_config.get('hidden_dim', 256)
-            self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
-            self.model.batch_size = saved_config.get('batch_size', 256)
-        elif self.model_name == 'GAT':
-            self.model = GATModel(config_path='config.yaml')
-            self.model.hidden_dim = saved_config.get('hidden_dim', 256)
-            self.model.heads = saved_config.get('heads', 4)
-            self.model.batch_size = saved_config.get('batch_size', 256)
-        elif self.model_name == 'GAT-KG':
-            self.model = GATKGModel(config_path='config.yaml')
-            self.model.hidden_dim = saved_config.get('hidden_dim', 256)
-            self.model.heads = saved_config.get('heads', 4)
-            self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
-            self.model.batch_size = saved_config.get('batch_size', 256)
-        elif self.model_name == 'GAT-KG-V2':
-            self.model = GATKGModelV2(config_path='config.yaml')
-            self.model.hidden_dim = saved_config.get('hidden_dim', 256)
-            self.model.heads = saved_config.get('heads', 4)
             self.model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
             self.model.batch_size = saved_config.get('batch_size', 256)
 
@@ -292,14 +276,11 @@ class Predictor:
         with torch.no_grad():
             X_tensor = torch.tensor(X_scaled, dtype=torch.float).to(self.model.device)
 
-            if isinstance(self.model, (GNNModel, GNNKGModel, GNNKGModelV2, GATModel, GATKGModel, GATKGModelV2)):
+            if isinstance(self.model, (GNNModel, GNNKGModel)):
                 from src.models.gnn_model import build_batch_adjacency
                 adj = build_batch_adjacency(X_scaled, k=30).to(self.model.device)
 
-                if isinstance(self.model, (GNNKGModelV2, GATKGModelV2)):
-                    kg_tensor = torch.tensor(avg_kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
-                    output = self.model.model(X_tensor, kg_tensor, adj)
-                elif isinstance(self.model, (GNNKGModel, GATKGModel)):
+                if isinstance(self.model, GNNKGModel):
                     kg_tensor = torch.tensor(avg_kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
                     output = self.model.model(X_tensor, kg_tensor, adj)
                 else:
@@ -309,15 +290,18 @@ class Predictor:
                 knn_emb = get_knn_embedding(X_scaled, self.X_train_raw, k=20)
                 kg_tensor = torch.tensor(knn_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
                 output = self.model.model(X_tensor, kg_tensor)
-            else:
+            elif isinstance(self.model, CNNKGModelV3):
                 kg_tensor = torch.tensor(avg_kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
                 output = self.model.model(X_tensor, kg_tensor)
+            else:
+                # MLP和CNN基准模型
+                output = self.model.model(X_tensor)
 
             pred_idx = output.argmax(dim=1).item()
             fault_name = self.label_encoder.inverse_transform([pred_idx])[0]
 
             # 第二阶段：用预测结果的KG嵌入重新预测（仅KG模型）
-            if isinstance(self.model, (GNNKGModel, GATKGModel)):
+            if isinstance(self.model, GNNKGModel):
                 specific_kg_emb = get_kg_embedding(fault_name)
                 kg_tensor = torch.tensor(specific_kg_emb.reshape(1, -1), dtype=torch.float).to(self.model.device)
                 output = self.model.model(X_tensor, kg_tensor, adj)
@@ -367,7 +351,7 @@ def main():
     parser.add_argument('--sample', action='store_true', help='使用随机示例数据')
     parser.add_argument('--data', type=str, help='传感器数据，用逗号分隔')
     parser.add_argument('--model', type=str, default='MLP-KG-V2',
-                        choices=['MLP-KG-V2', 'CNN-KG V2', 'GNN', 'GNN-KG', 'GNN-KG-V2', 'GAT', 'GAT-KG', 'GAT-KG-V2'], help='选择模型')
+                        choices=['MLP', 'MLP-KG', 'CNN', 'CNN-KG', 'GNN', 'GNN-KG'], help='选择模型')
     parser.add_argument('--no-llm', action='store_true', help='禁用LLM解释')
     parser.add_argument('--idx', type=int, help='指定样本索引')
 

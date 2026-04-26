@@ -22,9 +22,9 @@ from tqdm import tqdm
 import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4, load_kg_embeddings_mlp
-from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2, CNNKGModelV3
-from src.models.gnn_model import GNNModel, GNNKGModel, GNNKGModelV2, GATModel, GATKGModel, GATKGModelV2
+from src.models.mlp_model import MLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v4, load_kg_embeddings_mlp
+from src.models.cnn_model import CNNModel, CNNKGModelV3
+from src.models.gnn_model import GNNModel, GNNKGModel
 
 
 class EarlyStopping:
@@ -223,57 +223,7 @@ class Trainer:
 
         return model, val_metrics
 
-    def train_kg_mlp_v1(self, config=None, epochs=100, verbose=True, use_early_stopping=True):
-        """训练MLP-KG模型 - 使用KNN嵌入"""
-        if verbose:
-            print("\n" + "=" * 60)
-            print("训练 MLP-KG 模型 (KNN嵌入融合)")
-            print("=" * 60)
-
-        if config is None:
-            config = self.best_config
-
-        model = KGEnhancedMLPModel(config_path='config.yaml')
-        model.hidden_dim = config['hidden_dim']
-        model.dropout = config['dropout']
-        model.learning_rate = config['lr']
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-
-        model.optimizer = torch.optim.Adam(
-            model.model.parameters(),
-            lr=config['lr'],
-            weight_decay=config['weight_decay']
-        )
-
-        early_stop = EarlyStopping(patience=self.es_patience) if use_early_stopping and verbose else None
-
-        if verbose:
-            pbar = tqdm(range(epochs), desc="MLP-KG Training")
-        else:
-            pbar = range(epochs)
-
-        for epoch in pbar:
-            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb_mlp)
-            if verbose:
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-
-            if early_stop:
-                val_m, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb_mlp)
-                if early_stop.step(val_m['loss'], model.model.state_dict()):
-                    print(f"  早停触发 (epoch {epoch+1})，恢复最佳模型")
-                    early_stop.restore_best(model.model)
-                    break
-
-        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb_mlp)
-
-        if verbose:
-            print(f"MLP-KG 验证集准确率: {val_metrics['accuracy']:.4f}")
-            model.save_model('models/mlp_kg_model.pt')
-
-        return model, val_metrics
-
-    def train_kg_mlp_v2(self, config=None, epochs=100, verbose=True, use_early_stopping=True):
+    def train_mlp_kg(self, config=None, epochs=100, verbose=True, use_early_stopping=True):
         """训练MLP-KG-V2模型 - 门控融合架构
 
         Args:
@@ -371,82 +321,6 @@ class Trainer:
         return model, val_metrics
 
     def train_cnn_kg(self, epochs=100, verbose=True, use_early_stopping=True):
-        """训练CNN + KG融合模型"""
-        if verbose:
-            print("\n" + "=" * 60)
-            print("训练 CNN-KG 融合模型")
-            print("=" * 60)
-
-        model = CNNKGModel(config_path='config.yaml')
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-
-        early_stop = EarlyStopping(patience=self.es_patience) if use_early_stopping and verbose else None
-
-        if verbose:
-            pbar = tqdm(range(epochs), desc="CNN-KG Training")
-        else:
-            pbar = range(epochs)
-
-        for epoch in pbar:
-            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb)
-            if verbose:
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-
-            if early_stop:
-                val_m, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-                if early_stop.step(val_m['loss'], model.model.state_dict()):
-                    print(f"  早停触发 (epoch {epoch+1})，恢复最佳模型")
-                    early_stop.restore_best(model.model)
-                    break
-
-        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-
-        if verbose:
-            print(f"CNN-KG 验证集准确率: {val_metrics['accuracy']:.4f}")
-        model.save_model('models/cnn_kg_model.pt')
-
-        return model, val_metrics
-
-    def train_cnn_kg_v2(self, epochs=100, verbose=True, use_early_stopping=True):
-        """训练CNN + KG融合模型 V2 (门控融合)"""
-        if verbose:
-            print("\n" + "=" * 60)
-            print("训练 CNN-KG V2 融合模型 (门控融合)")
-            print("=" * 60)
-
-        model = CNNKGModelV2(config_path='config.yaml')
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-
-        early_stop = EarlyStopping(patience=self.es_patience) if use_early_stopping and verbose else None
-
-        if verbose:
-            pbar = tqdm(range(epochs), desc="CNN-KG V2 Training")
-        else:
-            pbar = range(epochs)
-
-        for epoch in pbar:
-            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb)
-            if verbose:
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-
-            if early_stop:
-                val_m, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-                if early_stop.step(val_m['loss'], model.model.state_dict()):
-                    print(f"  早停触发 (epoch {epoch+1})，恢复最佳模型")
-                    early_stop.restore_best(model.model)
-                    break
-
-        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-
-        if verbose:
-            print(f"CNN-KG V2 验证集准确率: {val_metrics['accuracy']:.4f}")
-        model.save_model('models/cnn_kg_v2_model.pt')
-
-        return model, val_metrics
-
-    def train_cnn_kg_v3(self, epochs=100, verbose=True, use_early_stopping=True):
         """训练CNN + KG融合模型 V3 (残差连接)"""
         if verbose:
             print("\n" + "=" * 60)
@@ -560,170 +434,17 @@ class Trainer:
 
         return model, val_metrics
 
-    def train_gnn_kg_v2(self, epochs=100, verbose=True, use_early_stopping=True):
-        """训练GNN-KG V2：交叉注意力 + 端到端可学习KG嵌入"""
-        if verbose:
-            print("\n" + "=" * 60)
-            print("训练 GNN-KG V2 模型 (交叉注意力+可学习嵌入)")
-            print("=" * 60)
-
-        model = GNNKGModelV2(config_path='config.yaml')
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-
-        early_stop = EarlyStopping(patience=self.es_patience) if use_early_stopping and verbose else None
-
-        if verbose:
-            pbar = tqdm(range(epochs), desc="GNN-KG-V2 Training")
-        else:
-            pbar = range(epochs)
-
-        for epoch in pbar:
-            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb)
-            if verbose:
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-
-            if early_stop:
-                val_m, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-                if early_stop.step(val_m['loss'], model.model.state_dict()):
-                    print(f"  早停触发 (epoch {epoch+1})，恢复最佳模型")
-                    early_stop.restore_best(model.model)
-                    break
-
-        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-
-        if verbose:
-            print(f"GNN-KG-V2 验证集准确率: {val_metrics['accuracy']:.4f}")
-        model.save_model('models/gnn_kg_v2_model.pt')
-
-        return model, val_metrics
-
-    def train_gat(self, epochs=100, verbose=True, use_early_stopping=True):
-        """训练GAT模型 (图注意力网络)"""
-        if verbose:
-            print("\n" + "=" * 60)
-            print("训练 GAT 模型 (图注意力网络)")
-            print("=" * 60)
-
-        model = GATModel(config_path='config.yaml')
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-
-        early_stop = EarlyStopping(patience=self.es_patience) if use_early_stopping and verbose else None
-
-        if verbose:
-            pbar = tqdm(range(epochs), desc="GAT Training")
-        else:
-            pbar = range(epochs)
-
-        for epoch in pbar:
-            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train)
-            if verbose:
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-
-            if early_stop:
-                val_m, _ = model.evaluate(self.X_val, self.y_val)
-                if early_stop.step(val_m['loss'], model.model.state_dict()):
-                    print(f"  早停触发 (epoch {epoch+1})，恢复最佳模型")
-                    early_stop.restore_best(model.model)
-                    break
-
-        val_metrics, _ = model.evaluate(self.X_val, self.y_val)
-
-        if verbose:
-            print(f"GAT 验证集准确率: {val_metrics['accuracy']:.4f}")
-        model.save_model('models/gat_model.pt')
-
-        return model, val_metrics
-
-    def train_gat_kg(self, epochs=100, verbose=True, use_early_stopping=True):
-        """训练GAT + KG融合模型"""
-        if verbose:
-            print("\n" + "=" * 60)
-            print("训练 GAT-KG 融合模型")
-            print("=" * 60)
-
-        model = GATKGModel(config_path='config.yaml')
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-
-        early_stop = EarlyStopping(patience=self.es_patience) if use_early_stopping and verbose else None
-
-        if verbose:
-            pbar = tqdm(range(epochs), desc="GAT-KG Training")
-        else:
-            pbar = range(epochs)
-
-        for epoch in pbar:
-            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb)
-            if verbose:
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-
-            if early_stop:
-                val_m, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-                if early_stop.step(val_m['loss'], model.model.state_dict()):
-                    print(f"  早停触发 (epoch {epoch+1})，恢复最佳模型")
-                    early_stop.restore_best(model.model)
-                    break
-
-        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-
-        if verbose:
-            print(f"GAT-KG 验证集准确率: {val_metrics['accuracy']:.4f}")
-        model.save_model('models/gat_kg_model.pt')
-
-        return model, val_metrics
-
-    def train_gat_kg_v2(self, epochs=100, verbose=True, use_early_stopping=True):
-        """训练GAT-KG V2：KG投影增强 + 深层融合"""
-        if verbose:
-            print("\n" + "=" * 60)
-            print("训练 GAT-KG V2 模型 (KG投影增强)")
-            print("=" * 60)
-
-        model = GATKGModelV2(config_path='config.yaml')
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-
-        early_stop = EarlyStopping(patience=self.es_patience) if use_early_stopping and verbose else None
-
-        if verbose:
-            pbar = tqdm(range(epochs), desc="GAT-KG-V2 Training")
-        else:
-            pbar = range(epochs)
-
-        for epoch in pbar:
-            train_loss, train_acc = model.train_epoch(self.X_train, self.y_train, self.kg_train_emb)
-            if verbose:
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-
-            if early_stop:
-                val_m, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-                if early_stop.step(val_m['loss'], model.model.state_dict()):
-                    print(f"  早停触发 (epoch {epoch+1})，恢复最佳模型")
-                    early_stop.restore_best(model.model)
-                    break
-
-        val_metrics, _ = model.evaluate(self.X_val, self.y_val, self.kg_val_emb)
-
-        if verbose:
-            print(f"GAT-KG-V2 验证集准确率: {val_metrics['accuracy']:.4f}")
-        model.save_model('models/gat_kg_v2_model.pt')
-
-        return model, val_metrics
-
     def save_results(self, results):
         """保存训练结果"""
         with open('results/training_results.json', 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         print(f"\n结果已保存至: results/training_results.json")
 
-    def run(self, train_mlp=True, train_kg_v1=True, train_kg_v2=True, train_cnn=True, train_cnn_kg=True, train_cnn_kg_v2=True, train_cnn_kg_v3=True, train_gnn=True, train_gnn_kg=True, train_gnn_kg_v2=False, train_gat=False, train_gat_kg=False, train_gat_kg_v2=False, epochs=100):
+    def run(self, train_mlp=True, train_mlp_kg=True, train_cnn=True, train_cnn_kg=True, train_gnn=True, train_gnn_kg=True, epochs=100):
         """运行完整训练流程"""
         print("\n" + "=" * 60)
         print("开始训练流程")
         print("=" * 60)
-        print(f"训练选项: MLP={train_mlp}, MLP-KG={train_kg_v1}, MLP-KG-V2={train_kg_v2}, CNN={train_cnn}, CNN_KG={train_cnn_kg}, CNN_KG_V2={train_cnn_kg_v2}, CNN_KG_V3={train_cnn_kg_v3}, GNN={train_gnn}, GNN_KG={train_gnn_kg}, GNN_KG_V2={train_gnn_kg_v2}, GAT={train_gat}, GAT_KG={train_gat_kg}, GAT_KG_V2={train_gat_kg_v2}, epochs={epochs}")
 
         results = {
             'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -735,13 +456,9 @@ class Trainer:
             mlp_model, mlp_val = self.train_mlp(epochs=epochs)
             results['models']['MLP'] = {'val_accuracy': float(mlp_val['accuracy'])}
 
-        if train_kg_v1:
-            kg_mlp_v1, kg_mlp_v1_val = self.train_kg_mlp_v1(epochs=epochs)
-            results['models']['MLP_KG'] = {'val_accuracy': float(kg_mlp_v1_val['accuracy'])}
-
-        if train_kg_v2:
-            kg_mlp_v2, kg_mlp_v2_val = self.train_kg_mlp_v2(epochs=epochs)
-            results['models']['MLP_KG_V2'] = {'val_accuracy': float(kg_mlp_v2_val['accuracy'])}
+        if train_mlp_kg:
+            mlp_kg_model, mlp_kg_val = self.train_mlp_kg(epochs=epochs)
+            results['models']['MLP_KG'] = {'val_accuracy': float(mlp_kg_val['accuracy'])}
 
         if train_cnn:
             cnn_model, cnn_val = self.train_cnn(epochs=epochs)
@@ -751,14 +468,6 @@ class Trainer:
             cnn_kg_model, cnn_kg_val = self.train_cnn_kg(epochs=epochs)
             results['models']['CNN_KG'] = {'val_accuracy': float(cnn_kg_val['accuracy'])}
 
-        if train_cnn_kg_v2:
-            cnn_kg_v2_model, cnn_kg_v2_val = self.train_cnn_kg_v2(epochs=epochs)
-            results['models']['CNN_KG_V2'] = {'val_accuracy': float(cnn_kg_v2_val['accuracy'])}
-
-        if train_cnn_kg_v3:
-            cnn_kg_v3_model, cnn_kg_v3_val = self.train_cnn_kg_v3(epochs=epochs)
-            results['models']['CNN_KG_V3'] = {'val_accuracy': float(cnn_kg_v3_val['accuracy'])}
-
         if train_gnn:
             gnn_model, gnn_val = self.train_gnn(epochs=epochs)
             results['models']['GNN'] = {'val_accuracy': float(gnn_val['accuracy'])}
@@ -766,22 +475,6 @@ class Trainer:
         if train_gnn_kg:
             gnn_kg_model, gnn_kg_val = self.train_gnn_kg(epochs=epochs)
             results['models']['GNN_KG'] = {'val_accuracy': float(gnn_kg_val['accuracy'])}
-
-        if train_gnn_kg_v2:
-            gnn_kg_v2_model, gnn_kg_v2_val = self.train_gnn_kg_v2(epochs=epochs)
-            results['models']['GNN_KG_V2'] = {'val_accuracy': float(gnn_kg_v2_val['accuracy'])}
-
-        if train_gat:
-            gat_model, gat_val = self.train_gat(epochs=epochs)
-            results['models']['GAT'] = {'val_accuracy': float(gat_val['accuracy'])}
-
-        if train_gat_kg:
-            gat_kg_model, gat_kg_val = self.train_gat_kg(epochs=epochs)
-            results['models']['GAT_KG'] = {'val_accuracy': float(gat_kg_val['accuracy'])}
-
-        if train_gat_kg_v2:
-            gat_kg_v2_model, gat_kg_v2_val = self.train_gat_kg_v2(epochs=epochs)
-            results['models']['GAT_KG_V2'] = {'val_accuracy': float(gat_kg_v2_val['accuracy'])}
 
         # 保存结果
         self.save_results(results)
@@ -1138,68 +831,6 @@ class BatchTuner:
         val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val)
         return val_metrics['accuracy']
 
-    def tune_gat(self, trial):
-        """GAT调优目标"""
-        hidden_dim = trial.suggest_categorical('hidden_dim', [128, 192, 256, 320])
-        heads = trial.suggest_categorical('heads', [2, 4, 8])
-        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.05)
-        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
-
-        model = GATModel(config_path='config.yaml')
-        model.hidden_dim = hidden_dim
-        model.heads = heads
-        model.dropout = dropout
-        model.learning_rate = lr
-        model.fault_to_idx = self.trainer.fault_to_idx
-        model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
-
-        for epoch in range(30):
-            model.train_epoch(self.trainer.X_train, self.trainer.y_train)
-
-        val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val)
-        return val_metrics['accuracy']
-
-    def tune_gat_kg(self, trial):
-        """GAT-KG调优目标"""
-        hidden_dim = trial.suggest_categorical('hidden_dim', [128, 192, 256, 320])
-        heads = trial.suggest_categorical('heads', [2, 4, 8])
-        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.05)
-        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
-
-        model = GATKGModel(config_path='config.yaml')
-        model.hidden_dim = hidden_dim
-        model.heads = heads
-        model.dropout = dropout
-        model.learning_rate = lr
-        model.fault_to_idx = self.trainer.fault_to_idx
-        model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
-
-        for epoch in range(30):
-            model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
-
-        val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
-        return val_metrics['accuracy']
-
-    def tune_gat_kg_v2(self, trial):
-        """GAT-KG V2调优目标"""
-        hidden_dim = trial.suggest_categorical('hidden_dim', [128, 192, 256, 320])
-        heads = trial.suggest_categorical('heads', [2, 4, 8])
-        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.05)
-        lr = trial.suggest_float('lr', 1e-4, 1e-1, log=True)
-
-        model = GATKGModelV2(config_path='config.yaml')
-        model.hidden_dim = hidden_dim
-        model.heads = heads
-        model.dropout = dropout
-        model.learning_rate = lr
-        model.fault_to_idx = self.trainer.fault_to_idx
-        model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
-
-        for epoch in range(30):
-            model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
-
-        val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
-        return val_metrics['accuracy']
 
     def tune_all(self):
         """批量调优所有模型"""
@@ -1214,9 +845,6 @@ class BatchTuner:
             ('GNN', self.tune_gnn),
             ('GNN-KG', self.tune_gnn_kg),
             ('GNN-KG V2', self.tune_gnn_kg_v2),
-            ('GAT', self.tune_gat),
-            ('GAT-KG', self.tune_gat_kg),
-            ('GAT-KG V2', self.tune_gat_kg_v2),
         ]
 
         print("\n" + "=" * 60)
@@ -1400,53 +1028,6 @@ class BatchTuner:
             trained_models['GNN_KG_V2'] = val_metrics
             print(f"GNN-KG V2 - 验证准确率: {val_metrics['accuracy']:.4f}")
 
-        # GAT
-        if 'GAT' in self.results:
-            model = GATModel(config_path='config.yaml')
-            for k, v in self.results['GAT']['best_params'].items():
-                setattr(model, k, v)
-            model.fault_to_idx = self.trainer.fault_to_idx
-            model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
-            pbar = tqdm(range(epochs), desc="GAT Training")
-            for epoch in pbar:
-                train_loss, train_acc = model.train_epoch(self.trainer.X_train, self.trainer.y_train)
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-            model.save_model('models/gat_model.pt')
-            val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val)
-            trained_models['GAT'] = val_metrics
-            print(f"GAT - 验证准确率: {val_metrics['accuracy']:.4f}")
-
-        # GAT-KG
-        if 'GAT-KG' in self.results:
-            model = GATKGModel(config_path='config.yaml')
-            for k, v in self.results['GAT-KG']['best_params'].items():
-                setattr(model, k, v)
-            model.fault_to_idx = self.trainer.fault_to_idx
-            model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
-            pbar = tqdm(range(epochs), desc="GAT-KG Training")
-            for epoch in pbar:
-                train_loss, train_acc = model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-            model.save_model('models/gat_kg_model.pt')
-            val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
-            trained_models['GAT_KG'] = val_metrics
-            print(f"GAT-KG - 验证准确率: {val_metrics['accuracy']:.4f}")
-
-        # GAT-KG V2
-        if 'GAT-KG V2' in self.results:
-            model = GATKGModelV2(config_path='config.yaml')
-            for k, v in self.results['GAT-KG V2']['best_params'].items():
-                setattr(model, k, v)
-            model.fault_to_idx = self.trainer.fault_to_idx
-            model.build_model(self.trainer.X_train.shape[1], len(self.trainer.fault_types))
-            pbar = tqdm(range(epochs), desc="GAT-KG-V2 Training")
-            for epoch in pbar:
-                train_loss, train_acc = model.train_epoch(self.trainer.X_train, self.trainer.y_train, self.trainer.kg_train_emb)
-                pbar.set_postfix({'loss': f'{train_loss:.4f}', 'acc': f'{train_acc:.4f}'})
-            model.save_model('models/gat_kg_v2_model.pt')
-            val_metrics, _ = model.evaluate(self.trainer.X_val, self.trainer.y_val, self.trainer.kg_val_emb)
-            trained_models['GAT_KG_V2'] = val_metrics
-            print(f"GAT-KG V2 - 验证准确率: {val_metrics['accuracy']:.4f}")
 
         return trained_models
 
@@ -1461,87 +1042,33 @@ class BatchTuner:
 def main():
     parser = argparse.ArgumentParser(description='训练故障预测模型')
     parser.add_argument('--mlp', action='store_true', help='训练MLP模型')
-    parser.add_argument('--mlp-kg', action='store_true', help='训练MLP-KG模型 (全局嵌入)')
-    parser.add_argument('--mlp-kg-v2', action='store_true', help='训练MLP-KG-V2模型 (故障级别嵌入)')
+    parser.add_argument('--mlp-kg', action='store_true', help='训练MLP-KG模型 (KNN嵌入)')
     parser.add_argument('--cnn', action='store_true', help='训练CNN模型')
-    parser.add_argument('--cnn-kg', action='store_true', help='训练CNN-KG融合模型')
-    parser.add_argument('--cnn-kg-v2', action='store_true', help='训练CNN-KG融合模型 V2 (门控融合)')
-    parser.add_argument('--cnn-kg-v3', action='store_true', help='训练CNN-KG融合模型 V3 (残差连接)')
+    parser.add_argument('--cnn-kg', action='store_true', help='训练CNN-KG模型')
     parser.add_argument('--gnn', action='store_true', help='训练GNN模型')
     parser.add_argument('--gnn-kg', action='store_true', help='训练GNN-KG融合模型')
-    parser.add_argument('--gnn-kg-v2', action='store_true', help='训练GNN-KG-V2模型 (交叉注意力+可学习嵌入)')
-    parser.add_argument('--gat', action='store_true', help='训练GAT模型 (图注意力网络)')
-    parser.add_argument('--gat-kg', action='store_true', help='训练GAT-KG融合模型')
-    parser.add_argument('--gat-kg-v2', action='store_true', help='训练GAT-KG-V2模型 (KG投影增强)')
-    parser.add_argument('--tune-v2', action='store_true', help='对V2模型进行贝叶斯优化调优')
-    parser.add_argument('--tune-all', action='store_true', help='批量调优所有模型')
-    parser.add_argument('--n-trials', type=int, default=20, help='调优试验次数 (默认20)')
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数 (默认100)')
     parser.add_argument('--all', action='store_true', help='训练所有模型')
     args = parser.parse_args()
 
-    # 批量调优模式
-    if args.tune_all:
-        print("=" * 60)
-        print("批量模型调优模式")
-        print("=" * 60)
-
-        trainer = Trainer()
-        tuner = BatchTuner(trainer, n_trials=args.n_trials)
-        tuner.tune_all()
-        tuner.save_results()
-
-        print("\n" + "=" * 60)
-        print("使用最佳参数训练所有模型...")
-        print("=" * 60)
-        tuner.train_all_best(epochs=args.epochs)
-
-        print("\n批量调优完成！")
-        return
-
-    # V2调优模式
-    if args.tune_v2:
-        print("=" * 60)
-        print("V2模型调优模式")
-        print("=" * 60)
-
-        trainer = Trainer()
-        tuner = V2Tuner(trainer, n_trials=args.n_trials)
-        best_params, best_value = tuner.tune()
-
-        # 使用最佳参数训练最终模型
-        model, val_metrics = tuner.train_best()
-        tuner.save_best_params()
-
-        print(f"\n最终模型验证集准确率: {val_metrics['accuracy']:.4f}")
-        return
-
     # 常规训练模式
     if args.all:
-        train_mlp = train_mlp_kg = train_mlp_kg_v2 = train_cnn = train_cnn_kg = train_cnn_kg_v2 = train_cnn_kg_v3 = train_gnn = train_gnn_kg = True
-        train_gnn_kg_v2 = train_gat = train_gat_kg = train_gat_kg_v2 = True
+        train_mlp = train_mlp_kg = train_cnn = train_cnn_kg = train_gnn = train_gnn_kg = True
     else:
-        any_model_specified = (args.mlp_kg or args.mlp_kg_v2 or args.cnn or args.cnn_kg or args.cnn_kg_v2 or args.cnn_kg_v3 or args.gnn or args.gnn_kg or args.gnn_kg_v2 or args.gat or args.gat_kg or args.gat_kg_v2)
+        any_model_specified = (args.mlp_kg or args.cnn or args.cnn_kg or args.gnn or args.gnn_kg)
         train_mlp = args.mlp or not any_model_specified
         train_mlp_kg = args.mlp_kg
-        train_mlp_kg_v2 = args.mlp_kg_v2
         train_cnn = args.cnn
         train_cnn_kg = args.cnn_kg
-        train_cnn_kg_v2 = args.cnn_kg_v2
-        train_cnn_kg_v3 = args.cnn_kg_v3
         train_gnn = args.gnn
         train_gnn_kg = args.gnn_kg
-        train_gnn_kg_v2 = args.gnn_kg_v2
-        train_gat = args.gat
-        train_gat_kg = args.gat_kg
-        train_gat_kg_v2 = args.gat_kg_v2
 
-    if not (train_mlp or train_mlp_kg or train_mlp_kg_v2 or train_cnn or train_cnn_kg or train_cnn_kg_v2 or train_cnn_kg_v3 or train_gnn or train_gnn_kg or train_gnn_kg_v2 or train_gat or train_gat_kg or train_gat_kg_v2):
-        print("请选择要训练的模型，使用 --mlp, --mlp-kg, --mlp-kg-v2, --cnn, --cnn-kg, --cnn-kg-v2, --cnn-kg-v3, --gnn, --gnn-kg, --gnn-kg-v2, --gat, --gat-kg, --gat-kg-v2, --tune-v2, --tune-all 或 --all")
+    if not (train_mlp or train_mlp_kg or train_cnn or train_cnn_kg or train_gnn or train_gnn_kg):
+        print("请选择要训练的模型")
         return
 
     trainer = Trainer()
-    trainer.run(train_mlp=train_mlp, train_kg_v1=train_mlp_kg, train_kg_v2=train_mlp_kg_v2, train_cnn=train_cnn, train_cnn_kg=train_cnn_kg, train_cnn_kg_v2=train_cnn_kg_v2, train_cnn_kg_v3=train_cnn_kg_v3, train_gnn=train_gnn, train_gnn_kg=train_gnn_kg, train_gnn_kg_v2=train_gnn_kg_v2, train_gat=train_gat, train_gat_kg=train_gat_kg, train_gat_kg_v2=train_gat_kg_v2, epochs=args.epochs)
+    trainer.run(train_mlp=train_mlp, train_mlp_kg=train_mlp_kg, train_cnn=train_cnn, train_cnn_kg=train_cnn_kg, train_gnn=train_gnn, train_gnn_kg=train_gnn_kg, epochs=args.epochs)
 
 
 if __name__ == '__main__':

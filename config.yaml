@@ -100,32 +100,6 @@ models:
     epochs: 100
     batch_size: 256
 
-  gat:
-    hidden_dim: 256
-    heads: 4
-    dropout: 0.3
-    learning_rate: 0.001
-    epochs: 100
-    batch_size: 256
-
-  gat_kg:
-    hidden_dim: 256
-    heads: 4
-    kg_embedding_dim: 33
-    dropout: 0.3
-    learning_rate: 0.001
-    epochs: 100
-    batch_size: 256
-
-  gat_kg_v2:
-    hidden_dim: 256
-    heads: 4
-    kg_embedding_dim: 33
-    dropout: 0.3
-    learning_rate: 0.001
-    epochs: 100
-    batch_size: 256
-
 # 训练配置
 training:
   test_size: 0.2
