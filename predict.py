@@ -118,7 +118,7 @@ class Predictor:
             'GNN-KG': 'gnn_kg_model.pt'
         }
 
-        path = Path('models') / model_path_map.get(self.model_name, 'mlp_kg_v2_model.pt')
+        path = Path('models') / model_path_map.get(self.model_name, 'mlp_kg_model.pt')
 
         if not path.exists():
             print(f"[错误] 模型文件不存在: {path}")
