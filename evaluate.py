@@ -12,15 +12,12 @@ import numpy as np
 import pandas as pd
 import torch
 import json
-import argparse
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, confusion_matrix
-from tqdm import tqdm
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 
-from src.models.mlp_model import MLPModel, KGEnhancedMLPModel, KGEnhancedMLPV2Model, load_kg_embeddings_v3, load_kg_embeddings_v4, load_kg_embeddings_mlp
-from src.models.cnn_model import CNNModel, CNNKGModel, CNNKGModelV2, CNNKGModelV3
-from src.models.gnn_model import GNNModel, GNNKGModel, GNNKGModelV2
+from src.data.loader import load_and_split_data
+from src.models.mlp_model import MLPModel, KGEnhancedMLPV2Model
+from src.models.cnn_model import CNNModel, CNNKGModelV3
+from src.models.gnn_model import GNNModel, GNNKGModel
 
 
 class Evaluator:
@@ -28,7 +25,6 @@ class Evaluator:
         self.device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
         print(f"[INFO] 使用设备: {self.device}")
 
-        # 最佳配置
         self.best_config = {
             'hidden_dim': 128,
             'dropout': 0.215,
@@ -36,228 +32,93 @@ class Evaluator:
             'weight_decay': 0.00021
         }
 
-        # 加载数据
-        self.load_data()
+        self._load_data()
 
-    def load_data(self):
-        """加载和预处理数据"""
+    def _load_data(self):
+        """使用共享模块加载数据"""
         print("\n" + "=" * 60)
         print("加载数据")
         print("=" * 60)
 
-        df = pd.read_csv('data/processed/processed_features.csv')
-        self.fault_types = df['fault_type'].unique()
-        print(f"数据集大小: {len(df)} 样本")
-        print(f"故障类型数: {len(self.fault_types)}")
+        data = load_and_split_data()
 
-        # 标签编码
-        self.label_encoder = LabelEncoder()
-        self.label_encoder.fit(self.fault_types)
-        y = self.label_encoder.transform(df['fault_type'])
-        self.fault_to_idx = dict(zip(self.label_encoder.classes_, range(len(self.label_encoder.classes_))))
-
-        # 特征
-        feature_cols = [col for col in df.columns if col not in ['fault_type', 'channel']]
-        X = df[feature_cols].values
-
-        # 标准化
-        self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X)
-
-        # 划分数据集
-        indices = np.arange(len(df))
-        train_idx, test_idx = train_test_split(
-            indices, test_size=0.2, random_state=42, stratify=y
-        )
-        train_idx, val_idx = train_test_split(
-            train_idx, test_size=0.2, random_state=42, stratify=y[train_idx]
-        )
-
-        self.X_train = X_scaled[train_idx]
-        self.X_val = X_scaled[val_idx]
-        self.X_test = X_scaled[test_idx]
-        self.y_train = y[train_idx]
-        self.y_val = y[val_idx]
-        self.y_test = y[test_idx]
-
-        # 获取划分后的故障类型标签（字符串）
-        fault_labels_all = df['fault_type'].values
-        fault_labels_train = fault_labels_all[train_idx]
-        fault_labels_val = fault_labels_all[val_idx]
-        fault_labels_test = fault_labels_all[test_idx]
-
-        # V1嵌入：使用旧的全局KG嵌入（6维）
-        self.kg_train_emb_v1 = load_kg_embeddings_v3(
-            'data/processed/kg_embeddings.json',
-            len(self.X_train), None, self.X_train
-        )
-        self.kg_val_emb_v1 = load_kg_embeddings_v3(
-            'data/processed/kg_embeddings.json',
-            len(self.X_val), None, self.X_train, self.X_val
-        )
-        self.kg_test_emb_v1 = load_kg_embeddings_v3(
-            'data/processed/kg_embeddings.json',
-            len(self.X_test), None, self.X_train, self.X_test
-        )
-
-        # V2嵌入：使用故障级别KG嵌入（33维）
-        self.kg_train_emb = load_kg_embeddings_v4(
-            'data/processed/fault_embeddings.json',
-            fault_labels_train,
-            'data/processed/kg_embeddings.json'
-        )
-        self.kg_val_emb = load_kg_embeddings_v4(
-            'data/processed/fault_embeddings.json',
-            fault_labels_val,
-            'data/processed/kg_embeddings.json'
-        )
-        self.kg_test_emb = load_kg_embeddings_v4(
-            'data/processed/fault_embeddings.json',
-            fault_labels_test,
-            'data/processed/kg_embeddings.json'
-        )
-
-        # MLP专用嵌入：基于KNN的样本级嵌入
-        self.kg_train_emb_mlp, self.kg_val_emb_mlp, self.kg_test_emb_mlp = load_kg_embeddings_mlp(
-            self.X_train, self.X_val, self.X_test, k=20
-        )
+        self.X_train = data['X_train']
+        self.X_val = data['X_val']
+        self.X_test = data['X_test']
+        self.y_train = data['y_train']
+        self.y_val = data['y_val']
+        self.y_test = data['y_test']
+        self.fault_types = data['fault_types']
+        self.fault_to_idx = data['fault_to_idx']
+        self.label_encoder = data['label_encoder']
+        self.kg_train_emb = data['kg_train_emb']
+        self.kg_val_emb = data['kg_val_emb']
+        self.kg_test_emb = data['kg_test_emb']
+        self.kg_train_emb_mlp = data['kg_train_emb_mlp']
+        self.kg_val_emb_mlp = data['kg_val_emb_mlp']
+        self.kg_test_emb_mlp = data['kg_test_emb_mlp']
 
         print(f"训练集: {len(self.X_train)} 样本")
         print(f"验证集: {len(self.X_val)} 样本")
         print(f"测试集: {len(self.X_test)} 样本")
-        print(f"V1 KG嵌入维度: {self.kg_train_emb_v1.shape}")
-        print(f"V2 KG嵌入维度: {self.kg_train_emb.shape}")
-        print(f"MLP KNN嵌入维度: {self.kg_train_emb_mlp.shape}")
 
     def get_available_models(self):
         """检测models文件夹中可用的模型"""
+        model_files = {
+            'MLP': 'mlp_model.pt',
+            'MLP_KG': 'mlp_kg_model.pt',
+            'CNN': 'cnn_model.pt',
+            'CNN_KG': 'cnn_kg_model.pt',
+            'GNN': 'gnn_model.pt',
+            'GNN_KG': 'gnn_kg_model.pt',
+        }
         models_dir = Path('models')
-        available = {}
+        return {name: models_dir / fname for name, fname in model_files.items() if (models_dir / fname).exists()}
 
-        mlp_path = models_dir / 'mlp_model.pt'
-        kg_path = models_dir / 'mlp_kg_model.pt'
-        cnn_path = models_dir / 'cnn_model.pt'
-        cnn_kg_path = models_dir / 'cnn_kg_model.pt'
-        gnn_path = models_dir / 'gnn_model.pt'
-        gnn_kg_path = models_dir / 'gnn_kg_model.pt'
+    def _load_model(self, model_name):
+        """统一加载模型"""
+        model_map = {
+            'MLP': (MLPModel, {}),
+            'MLP_KG': (KGEnhancedMLPV2Model, {'kg_embedding_dim': 64}),
+            'CNN': (CNNModel, {}),
+            'CNN_KG': (CNNKGModelV3, {'kg_embedding_dim': 33}),
+            'GNN': (GNNModel, {}),
+            'GNN_KG': (GNNKGModel, {'kg_embedding_dim': 33}),
+        }
+        path_map = {
+            'MLP': 'mlp_model.pt', 'MLP_KG': 'mlp_kg_model.pt',
+            'CNN': 'cnn_model.pt', 'CNN_KG': 'cnn_kg_model.pt',
+            'GNN': 'gnn_model.pt', 'GNN_KG': 'gnn_kg_model.pt',
+        }
 
-        if mlp_path.exists():
-            available['MLP'] = mlp_path
-        if kg_path.exists():
-            available['MLP_KG'] = kg_path
-        if cnn_path.exists():
-            available['CNN'] = cnn_path
-        if cnn_kg_path.exists():
-            available['CNN_KG'] = cnn_kg_path
-        if gnn_path.exists():
-            available['GNN'] = gnn_path
-        if gnn_kg_path.exists():
-            available['GNN_KG'] = gnn_kg_path
-
-        return available
-
-    def load_mlp(self):
-        """加载MLP模型"""
-        checkpoint = torch.load('models/mlp_model.pt', map_location=self.device)
+        cls, extra_kwargs = model_map[model_name]
+        checkpoint = torch.load(f"models/{path_map[model_name]}", map_location=self.device, weights_only=True)
         saved_config = checkpoint.get('config', {})
 
-        model = MLPModel(config_path='config.yaml')
-        model.hidden_dim = saved_config.get('hidden_dim', model.hidden_dim)
-        model.dropout = saved_config.get('dropout', model.dropout)
+        model = cls(config_path='config.yaml')
+        for key, val in extra_kwargs.items():
+            setattr(model, key, saved_config.get(key, val))
+        for key in ['hidden_dim', 'dropout', 'num_layers', 'batch_size']:
+            if key in saved_config:
+                setattr(model, key, saved_config[key])
+        if 'learning_rate' in saved_config:
+            model.learning_rate = saved_config['learning_rate']
+
         model.fault_to_idx = self.fault_to_idx
         model.build_model(self.X_train.shape[1], len(self.fault_types))
         model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] MLP模型已加载 (hidden_dim={model.hidden_dim})")
+        print(f"[INFO] {model_name} 模型已加载")
         return model
 
-    def load_kg_mlp(self):
-        """加载MLP-KG模型"""
-        checkpoint = torch.load('models/mlp_kg_model.pt', map_location=self.device)
-        saved_config = checkpoint.get('config', {})
-
-        model = KGEnhancedMLPV2Model(config_path='config.yaml')
-        model.hidden_dim = saved_config.get('hidden_dim', self.best_config['hidden_dim'])
-        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 64)
-        model.dropout = saved_config.get('dropout', self.best_config['dropout'])
-        model.learning_rate = saved_config.get('learning_rate', self.best_config['lr'])
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-        model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] MLP-KG模型已加载 (hidden_dim={model.hidden_dim}, kg_dim={model.kg_embedding_dim})")
-        return model
-
-    def load_cnn(self):
-        """加载CNN模型"""
-        checkpoint = torch.load('models/cnn_model.pt', map_location=self.device)
-        saved_config = checkpoint.get('config', {})
-
-        model = CNNModel(config_path='config.yaml')
-        model.hidden_dim = saved_config.get('hidden_dim', 64)
-        model.dropout = saved_config.get('dropout', 0.3)
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-        model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] CNN模型已加载")
-        return model
-
-    def load_cnn_kg(self):
-        """加载CNN-KG融合模型"""
-        checkpoint = torch.load('models/cnn_kg_model.pt', map_location=self.device)
-        saved_config = checkpoint.get('config', {})
-
-        model = CNNKGModelV3(config_path='config.yaml')
-        model.hidden_dim = saved_config.get('hidden_dim', 64)
-        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
-        model.dropout = saved_config.get('dropout', 0.2)
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-        model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] CNN-KG模型已加载")
-        return model
-
-    def load_gnn(self):
-        """加载GNN模型 (V2改进版)"""
-        checkpoint = torch.load('models/gnn_model.pt', map_location=self.device)
-        saved_config = checkpoint.get('config', {})
-
-        model = GNNModel(config_path='config.yaml')
-        model.hidden_dim = saved_config.get('hidden_dim', 256)
-        model.num_layers = saved_config.get('num_layers', 4)
-        model.dropout = saved_config.get('dropout', 0.3)
-        model.batch_size = saved_config.get('batch_size', 256)
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-        model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] GNN模型已加载 (hidden_dim={model.hidden_dim})")
-        return model
-
-    def load_gnn_kg(self):
-        """加载GNN-KG融合模型 (V2改进版)"""
-        checkpoint = torch.load('models/gnn_kg_model.pt', map_location=self.device)
-        saved_config = checkpoint.get('config', {})
-
-        model = GNNKGModel(config_path='config.yaml')
-        model.hidden_dim = saved_config.get('hidden_dim', 256)
-        model.num_layers = saved_config.get('num_layers', 4)
-        model.dropout = saved_config.get('dropout', 0.3)
-        model.kg_embedding_dim = saved_config.get('kg_embedding_dim', 33)
-        model.batch_size = saved_config.get('batch_size', 256)
-        model.fault_to_idx = self.fault_to_idx
-        model.build_model(self.X_train.shape[1], len(self.fault_types))
-        model.model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"[INFO] GNN-KG模型已加载 (hidden_dim={model.hidden_dim})")
-        return model
-
-    def evaluate_model(self, model, X, y, kg_emb=None, model_name="Model"):
+    def evaluate_model(self, model, X, y, kg_emb=None):
         """评估单个模型"""
         if kg_emb is not None:
-            metrics, y_pred = model.evaluate(X, y, kg_emb)
+            _, y_pred = model.evaluate(X, y, kg_emb)
         else:
-            metrics, y_pred = model.evaluate(X, y)
+            _, y_pred = model.evaluate(X, y)
 
         acc = accuracy_score(y, y_pred)
         f1 = f1_score(y, y_pred, average='weighted')
-
         return {'accuracy': acc, 'f1': f1}, y_pred
 
     def plot_confusion_matrix(self, y_true, y_pred, model_name, save_path='results/figures'):
@@ -284,7 +145,6 @@ class Evaluator:
 
         plt.setp(ax.get_xticklabels(), rotation=45, ha='right', rotation_mode='anchor')
 
-        # 在格子中显示数值
         thresh = cm.max() / 2.
         for i in range(len(labels)):
             for j in range(len(labels)):
@@ -298,9 +158,16 @@ class Evaluator:
         plt.close(fig)
         print(f"  混淆矩阵已保存: {filepath}")
 
+    def _get_kg_emb(self, model_name, split='test'):
+        """根据模型名和数据集获取对应的KG嵌入"""
+        if model_name == 'MLP_KG':
+            return self.kg_test_emb_mlp if split == 'test' else self.kg_val_emb_mlp
+        elif model_name in ('CNN_KG', 'GNN_KG'):
+            return self.kg_test_emb if split == 'test' else self.kg_val_emb
+        return None
+
     def run(self):
         """运行评估流程"""
-        # 检测可用模型
         available = self.get_available_models()
 
         if not available:
@@ -328,31 +195,12 @@ class Evaluator:
             print(f"{i}/{model_count} 评估 {model_name}")
             print("=" * 60)
 
-            # 加载模型并评估
-            if model_name == 'MLP':
-                model = self.load_mlp()
-                val, _ = self.evaluate_model(model, self.X_val, self.y_val, None, model_name)
-                test, _ = self.evaluate_model(model, self.X_test, self.y_test, None, model_name)
-            elif model_name == 'MLP_KG':
-                model = self.load_kg_mlp()
-                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb_mlp, model_name)
-                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb_mlp, model_name)
-            elif model_name == 'CNN':
-                model = self.load_cnn()
-                val, _ = self.evaluate_model(model, self.X_val, self.y_val, None, model_name)
-                test, _ = self.evaluate_model(model, self.X_test, self.y_test, None, model_name)
-            elif model_name == 'CNN_KG':
-                model = self.load_cnn_kg()
-                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
-                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
-            elif model_name == 'GNN':
-                model = self.load_gnn()
-                val, _ = self.evaluate_model(model, self.X_val, self.y_val, None, model_name)
-                test, _ = self.evaluate_model(model, self.X_test, self.y_test, None, model_name)
-            elif model_name == 'GNN_KG':
-                model = self.load_gnn_kg()
-                val, _ = self.evaluate_model(model, self.X_val, self.y_val, self.kg_val_emb, model_name)
-                test, _ = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, model_name)
+            model = self._load_model(model_name)
+            val_kg = self._get_kg_emb(model_name, 'val')
+            test_kg = self._get_kg_emb(model_name, 'test')
+
+            val, _ = self.evaluate_model(model, self.X_val, self.y_val, val_kg)
+            test, _ = self.evaluate_model(model, self.X_test, self.y_test, test_kg)
 
             results['validation'][model_name] = val
             results['test'][model_name] = test
@@ -384,33 +232,12 @@ class Evaluator:
         # 为最佳模型生成混淆矩阵
         if best_model_name and best_model_name in available:
             print(f"\n为最佳模型 {best_model_name} 生成混淆矩阵...")
-            best_model_path = available[best_model_name]
-            model_display_name = best_model_name.replace('_', ' ')
-
-            # 重新加载最佳模型获取预测
-            if best_model_name == 'MLP':
-                model = self.load_mlp()
-                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, None, best_model_name)
-            elif best_model_name == 'MLP_KG':
-                model = self.load_kg_mlp()
-                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb_mlp, best_model_name)
-            elif best_model_name == 'CNN':
-                model = self.load_cnn()
-                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, None, best_model_name)
-            elif best_model_name == 'CNN_KG':
-                model = self.load_cnn_kg()
-                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, best_model_name)
-            elif best_model_name == 'GNN':
-                model = self.load_gnn()
-                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, None, best_model_name)
-            elif best_model_name == 'GNN_KG':
-                model = self.load_gnn_kg()
-                _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, self.kg_test_emb, best_model_name)
-
-            self.plot_confusion_matrix(self.y_test, y_pred, model_display_name)
+            model = self._load_model(best_model_name)
+            test_kg = self._get_kg_emb(best_model_name, 'test')
+            _, y_pred = self.evaluate_model(model, self.X_test, self.y_test, test_kg)
+            self.plot_confusion_matrix(self.y_test, y_pred, best_model_name.replace('_', ' '))
 
         print(f"\n详细结果已保存至: results/evaluation_results.json")
-
         return results
 
 
