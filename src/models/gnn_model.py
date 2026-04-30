@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
+from sklearn.utils.class_weight import compute_class_weight
 
 from src.models.mlp_model import BaseModelWrapper
 
@@ -140,6 +141,31 @@ def build_batch_adjacency(X_batch, k=30):
     return torch.tensor(adj, dtype=torch.float)
 
 
+class FocalLoss(nn.Module):
+    """Focal Loss - 降低易分类样本权重，关注难分类样本"""
+
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+        if alpha is not None:
+            self.alpha = torch.tensor(alpha, dtype=torch.float)
+        else:
+            self.alpha = None
+
+    def forward(self, inputs, targets):
+        alpha = self.alpha.to(inputs.device) if self.alpha is not None else None
+        ce_loss = F.cross_entropy(inputs, targets, weight=alpha, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
 class _GNNBaseWrapper(BaseModelWrapper):
     """GNN包装器公共基类 - 处理batch训练和邻接矩阵构建"""
 
@@ -150,6 +176,8 @@ class _GNNBaseWrapper(BaseModelWrapper):
         self.num_layers = model_cfg.get('num_layers', 4)
         self.batch_size = model_cfg.get('batch_size', 256)
         self.scheduler = None
+        self.use_focal_loss = True
+        self.focal_gamma = 2.0
 
     def _init_optimizer(self):
         self.optimizer = torch.optim.Adam(
@@ -159,6 +187,18 @@ class _GNNBaseWrapper(BaseModelWrapper):
             self.optimizer, T_max=self.epochs, eta_min=1e-6
         )
 
+    def set_class_weights(self, y_train):
+        """计算类别权重，增加Mixed_Fault的权重"""
+        classes = np.unique(y_train)
+        weights = compute_class_weight('balanced', classes=classes, y=y_train)
+
+        # 找到Mixed_Fault的索引并增加其权重
+        for i, c in enumerate(classes):
+            if 'Mixed' in str(c):
+                weights[i] *= 1.5  # 增加50%权重
+
+        self.class_weights = torch.tensor(weights, dtype=torch.float).to(self.device)
+
     def train_epoch(self, X, y, kg_embeddings=None):
         self.model.train()
         indices = np.arange(len(X))
@@ -166,6 +206,12 @@ class _GNNBaseWrapper(BaseModelWrapper):
         total_loss = 0
         total_correct = 0
         total_samples = 0
+
+        # 使用Focal Loss
+        if self.use_focal_loss and self.class_weights is not None:
+            criterion = FocalLoss(alpha=self.class_weights.cpu().numpy(), gamma=self.focal_gamma)
+        else:
+            criterion = lambda out, tgt: F.cross_entropy(out, tgt, weight=self.class_weights)
 
         for start in range(0, len(X), self.batch_size):
             end = min(start + self.batch_size, len(X))
@@ -184,7 +230,7 @@ class _GNNBaseWrapper(BaseModelWrapper):
             else:
                 out = self.model(X_tensor, adj)
 
-            loss = F.cross_entropy(out, y_tensor, weight=self.class_weights)
+            loss = criterion(out, y_tensor)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
